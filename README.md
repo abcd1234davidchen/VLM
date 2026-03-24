@@ -1,6 +1,6 @@
-VLM based Home Care System
+# VLM based Home Care System
 
-Stages:
+## Stages:
 [ ] Data Collection
     [ ] Charades/lemma dataset
     [ ] Toyota smart home dataset
