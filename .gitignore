@@ -1,2 +1,5 @@
 /dataset/*.mp4
+/dataset/prototype/
+/cache/
+/artifacts/
 .DS_Store

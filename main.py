@@ -1,5 +1,8 @@
+from train_video_classifier import main as train_main
+
+
 def main():
-    print("Hello from vlm!")
+    train_main()
 
 
 if __name__ == "__main__":
