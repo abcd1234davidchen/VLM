@@ -142,6 +142,56 @@ def get_embedding_cache_path(cache_dir: Path, sample: VideoSample) -> Path:
     return cache_dir / "embeddings" / sample.split / f"{sample.video_path.stem}.pt"
 
 
+def build_cache_metadata(
+    sample: VideoSample,
+    *,
+    model_name: str,
+    frame_stride: int,
+    max_seq_len: int,
+) -> dict[str, object]:
+    return {
+        "model_name": model_name,
+        "frame_stride": frame_stride,
+        "max_seq_len": max_seq_len,
+        "video_path": str(sample.video_path),
+        "split": sample.split,
+        "class_id": sample.class_id,
+        "class_index": sample.class_index,
+    }
+
+
+def is_cache_compatible(
+    payload: dict[str, object],
+    sample: VideoSample,
+    *,
+    model_name: str,
+    frame_stride: int,
+    max_seq_len: int,
+) -> bool:
+    embeddings = payload.get("embeddings")
+    valid_length = payload.get("valid_length")
+    metadata = payload.get("cache_metadata")
+
+    if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:
+        return False
+    if embeddings.shape[0] != max_seq_len:
+        return False
+    if not isinstance(valid_length, int):
+        return False
+    if valid_length < 1 or valid_length > max_seq_len:
+        return False
+    if not isinstance(metadata, dict):
+        return False
+
+    expected_metadata = build_cache_metadata(
+        sample,
+        model_name=model_name,
+        frame_stride=frame_stride,
+        max_seq_len=max_seq_len,
+    )
+    return metadata == expected_metadata
+
+
 def embed_video(
     sample: VideoSample,
     *,
@@ -198,12 +248,25 @@ def extract_or_load_embeddings(
     model: CLIPModel | None = None
 
     cached: dict[str, list[CachedSample]] = {"train": [], "test": []}
+    refreshed_cache_files = 0
 
     for split_name in ("train", "test"):
         for sample in split[split_name]:
             cache_path = get_embedding_cache_path(cache_dir, sample)
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            if force_extract or not cache_path.exists():
+            cache_payload: dict[str, object] | None = None
+            should_extract = force_extract or not cache_path.exists()
+            if not should_extract:
+                cache_payload = torch.load(cache_path, map_location="cpu")
+                should_extract = not is_cache_compatible(
+                    cache_payload,
+                    sample,
+                    model_name=model_name,
+                    frame_stride=frame_stride,
+                    max_seq_len=max_seq_len,
+                )
+
+            if should_extract:
                 # Lazy-load CLIP only if at least one video needs extraction.
                 if processor is None or model is None:
                     processor = CLIPProcessor.from_pretrained(model_name)
@@ -226,12 +289,19 @@ def extract_or_load_embeddings(
                         "class_index": sample.class_index,
                         "video_path": str(sample.video_path),
                         "split": sample.split,
+                        "cache_metadata": build_cache_metadata(
+                            sample,
+                            model_name=model_name,
+                            frame_stride=frame_stride,
+                            max_seq_len=max_seq_len,
+                        ),
                     },
                     cache_path,
                 )
+                refreshed_cache_files += 1
             else:
-                payload = torch.load(cache_path, map_location="cpu")
-                valid_length = int(payload["valid_length"])
+                assert cache_payload is not None
+                valid_length = int(cache_payload["valid_length"])
 
             cached[split_name].append(
                 CachedSample(
@@ -251,6 +321,8 @@ def extract_or_load_embeddings(
         for split_name, samples in cached.items()
     }
     records_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if refreshed_cache_files:
+        print(f"Refreshed {refreshed_cache_files} cached embedding files.")
     return cached
 
 
