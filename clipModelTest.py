@@ -2,6 +2,8 @@ from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 import cv2
 import numpy as np
+import time
+import torch
 
 
 def videoMaxPooling(video_path, pool_size):
@@ -32,9 +34,18 @@ def main():
     model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
     processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-    inputs = processor(text=["wearing clothes","cleaning up"], images=pooled_frames, return_tensors="pt", padding=True)
+    start = time.perf_counter()
+    inputs = processor(
+        text=["dog", "cat"],
+        images='dataset/000000039769.jpg',
+        return_tensors="pt",
+        padding=True,
+    )
+    with torch.no_grad():
+        outputs = model(**inputs)
+    elapsed = time.perf_counter() - start
+    print(f"Processor + model time: {elapsed:.4f}s")
 
-    outputs = model(**inputs)
     logits_per_image = outputs.logits_per_image # this is the image-text similarity score
     probs = logits_per_image.softmax(dim=1) # we can take the softmax to get the label probabilities
     print(probs)

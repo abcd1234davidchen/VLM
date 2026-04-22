@@ -61,7 +61,7 @@ def build_split(
     videos_per_split: int,
     seed: int,
 ) -> dict[str, list[VideoSample]]:
-    """Per class: shuffle, take 2 * videos_per_split clips, first half train, second half test."""
+    """Per class: shuffle, take 6 * videos_per_split clips, split 5/6 train/test, and build VideoSample objects."""
     class_ids = list(class_ids)
     rng = random.Random(seed)
     videos_by_class = discover_videos(videos_dir, class_ids)
@@ -69,7 +69,7 @@ def build_split(
 
     for class_index, class_id in enumerate(class_ids):
         candidates = list(videos_by_class[class_id])
-        required = videos_per_split * 2
+        required = videos_per_split * 6 
         if len(candidates) < required:
             raise ValueError(
                 f"Class {class_id:03d} only has {len(candidates)} videos; "
@@ -79,8 +79,8 @@ def build_split(
         rng.shuffle(candidates)
         selected = candidates[:required]
         # Deterministic ordering within each split after random selection (stable manifests / debugging).
-        train_paths = sorted(selected[:videos_per_split], key=lambda path: path.name)
-        test_paths = sorted(selected[videos_per_split:required], key=lambda path: path.name)
+        train_paths = sorted(selected[:5*videos_per_split], key=lambda path: path.name)
+        test_paths = sorted(selected[5*videos_per_split:], key=lambda path: path.name)
 
         split["train"].extend(
             VideoSample(

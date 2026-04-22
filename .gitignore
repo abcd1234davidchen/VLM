@@ -3,3 +3,6 @@
 /cache/
 /artifacts/
 .DS_Store
+*.zip
+*.avi
+__pycache__/
