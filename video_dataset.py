@@ -112,14 +112,16 @@ def save_split_manifest(
     frame_stride: int,
     max_seq_len: int,
 ) -> None:
-    """Write train/test sample lists plus metadata needed to reproduce preprocessing."""
+    """Write sample lists plus metadata needed to reproduce preprocessing."""
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "seed": seed,
         "frame_stride": frame_stride,
         "max_seq_len": max_seq_len,
-        "train": [sample.to_manifest_record() for sample in split["train"]],
-        "test": [sample.to_manifest_record() for sample in split["test"]],
+        **{
+            split_name: [sample.to_manifest_record() for sample in samples]
+            for split_name, samples in split.items()
+        },
     }
     manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -127,9 +129,13 @@ def save_split_manifest(
 def load_split_manifest(manifest_path: Path) -> dict[str, list[VideoSample]]:
     """Rebuild VideoSample lists from JSON written by save_split_manifest."""
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    split: dict[str, list[VideoSample]] = {"train": [], "test": []}
-    for split_name in ("train", "test"):
-        for item in payload[split_name]:
+    metadata_keys = {"seed", "frame_stride", "max_seq_len"}
+    split: dict[str, list[VideoSample]] = {}
+    for split_name, records in payload.items():
+        if split_name in metadata_keys:
+            continue
+        split[split_name] = []
+        for item in records:
             split[split_name].append(
                 VideoSample(
                     video_path=Path(item["video_path"]),
