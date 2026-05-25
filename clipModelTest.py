@@ -31,7 +31,7 @@ def sample_frame_indices(clip_len, frame_sample_rate, seg_len):
     return indices
 
 def main():
-    video_path = "dataset/nturgb+d_rgb_s019/S019C001P008R001A103_rgb.avi"
+    video_path = "dataset/subset264/S19/S019C001P008R001A103_rgb.mp4"
     container = av.open(video_path)
     total_frames = container.streams.video[0].frames
 

@@ -27,7 +27,7 @@ def sample_frame_indices(clip_len, frame_sample_rate, seg_len):
     return indices
 
 
-container = av.open("dataset/nturgb+d_rgb_s019/S019C001P008R001A103_rgb.avi")
+container = av.open("dataset/subset264/S19/S019C001P008R001A103_rgb.mp4")
 total_frames = container.streams.video[0].frames
 
 
