@@ -23,6 +23,7 @@ from train_video_classifier import (
     train_epoch,
 )
 from video_dataset import VideoSample, parse_class_id, save_split_manifest
+from video_dataset import iter_video_paths
 from video_embedding_cache import CachedEmbeddingDataset, extract_or_load_embeddings
 
 
@@ -45,9 +46,9 @@ def binary_class_name(class_index: int) -> str:
 
 
 def discover_binary_videos(videos_dir: Path) -> dict[int, list[Path]]:
-    """Collect all supported .avi videos, grouped by binary safe/danger label."""
+    """Collect all supported videos, grouped by binary safe/danger label."""
     grouped: dict[int, list[Path]] = {0: [], 1: []}
-    for video_path in sorted(videos_dir.rglob("*.avi")):
+    for video_path in iter_video_paths(videos_dir):
         class_id = parse_class_id(video_path)
         grouped[binary_class_index(class_id)].append(video_path)
     return grouped

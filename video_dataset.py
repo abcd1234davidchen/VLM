@@ -1,6 +1,6 @@
 """Video discovery, train/test splitting, frame sampling, and embedding sequence shaping.
 
-Filenames should end with A###_rgb.mp4 (### = three-digit class) so labels need no sidecar file.
+Filenames should end with A###_rgb.(avi|mp4) (### = three-digit class) so labels need no sidecar file.
 Split manifests record train/test membership plus preprocessing knobs (stride, max sequence length).
 """
 from __future__ import annotations
@@ -18,7 +18,8 @@ from PIL import Image
 
 
 # e.g. foo_A001_rgb.mp4 -> class_id 1
-VIDEO_NAME_PATTERN = re.compile(r".*A(?P<class_id>\d{3})_rgb\.mp4$")
+VIDEO_NAME_PATTERN = re.compile(r".*A(?P<class_id>\d{3})_rgb\.(?:avi|mp4)$", re.IGNORECASE)
+VIDEO_FILE_PATTERNS = ("*.avi", "*.mp4")
 
 
 @dataclass(frozen=True)
@@ -41,10 +42,21 @@ def parse_class_id(video_path: Path) -> int:
     return int(match.group("class_id"))
 
 
+def iter_video_paths(videos_dir: Path) -> list[Path]:
+    """Return all supported video files under videos_dir, sorted and de-duplicated."""
+    return sorted(
+        {
+            video_path
+            for pattern in VIDEO_FILE_PATTERNS
+            for video_path in videos_dir.rglob(pattern)
+        }
+    )
+
+
 def scan_all_classes(videos_dir: Path) -> list[int]:
     """Scan the directory for all unique class IDs based on filenames."""
     class_ids = set()
-    for video_path in videos_dir.rglob("*.mp4"):
+    for video_path in iter_video_paths(videos_dir):
         match = VIDEO_NAME_PATTERN.fullmatch(video_path.name)
         if match is not None:
             class_ids.add(int(match.group("class_id")))
@@ -52,12 +64,12 @@ def scan_all_classes(videos_dir: Path) -> list[int]:
 
 
 def discover_videos(videos_dir: Path, class_ids: Iterable[int]) -> dict[int, list[Path]]:
-    """Collect .mp4 paths per requested class id; each class list is sorted by path."""
+    """Collect video paths per requested class id; each class list is sorted by path."""
     requested_ids = list(class_ids)
     requested_set = set(requested_ids)
     discovered: dict[int, list[Path]] = {class_id: [] for class_id in requested_ids}
 
-    for video_path in sorted(videos_dir.rglob("*.mp4")):
+    for video_path in iter_video_paths(videos_dir):
         class_id = parse_class_id(video_path)
         if class_id in requested_set:
             discovered[class_id].append(video_path)
