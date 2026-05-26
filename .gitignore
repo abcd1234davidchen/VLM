@@ -5,4 +5,6 @@
 .DS_Store
 *.zip
 *.avi
+*.mp4
+/dataset/*.gif
 __pycache__/

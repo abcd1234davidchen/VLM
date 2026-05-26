@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -20,12 +22,12 @@ from torch.utils.data import DataLoader
 from video_dataset import (
     build_split,
     save_split_manifest,
+    scan_all_classes,
 )
 from video_embedding_cache import CachedEmbeddingDataset, CachedSample, extract_or_load_embeddings
 
 
-# Default UCF-101-style subset when --class-ids is omitted (classes 001..010).
-DEFAULT_CLASS_IDS = tuple(range(1, 11))
+# If --class-ids is omitted, the script will scan the videos directory for all available classes.
 
 
 class GRUVideoClassifier(nn.Module):
@@ -169,7 +171,13 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     cache_dir = Path(args.cache_dir)
     artifacts_dir = Path(args.artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    class_ids = list(args.class_ids)
+    
+    if args.class_ids:
+        class_ids = list(args.class_ids)
+    else:
+        class_ids = scan_all_classes(videos_dir)
+        print(f"Auto-discovered {len(class_ids)} classes in {videos_dir}")
+        
     device = resolve_device(args.device)
 
     split = build_split(
@@ -253,7 +261,11 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             device,
             class_ids,
         )
+        
+        t0 = time.time()
         test_accuracy, _ = evaluate(model, test_loader, cached["test"], device, class_ids)
+        test_time = time.time() - t0
+        
         scheduler.step()
         history.append(
             {
@@ -261,13 +273,15 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
                 "train_loss": loss,
                 "train_accuracy": train_accuracy,
                 "test_accuracy": test_accuracy,
+                "test_time": test_time,
             }
         )
         print(
             f"epoch={epoch:02d} "
             f"train_loss={loss:.4f} "
             f"train_accuracy={train_accuracy:.4f} "
-            f"test_accuracy={test_accuracy:.4f}"
+            f"test_accuracy={test_accuracy:.4f} "
+            f"test_time={test_time:.4f}s"
         )
 
     final_accuracy, predictions = evaluate(
@@ -307,11 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train a prototype video classifier from CLIP frame embeddings.",
     )
-    parser.add_argument("--videos-dir", default="dataset/prototype")
+    parser.add_argument("--videos-dir", default="dataset/subset264")
     parser.add_argument("--cache-dir", default="cache")
     parser.add_argument("--artifacts-dir", default="artifacts")
     parser.add_argument("--model-name", default="openai/clip-vit-base-patch32")
-    parser.add_argument("--class-ids", type=int, nargs="+", default=list(DEFAULT_CLASS_IDS))
+    parser.add_argument("--class-ids", type=int, nargs="+", default=None, help="List of class IDs. If omitted, uses all discovered classes in the dataset folder.")
     parser.add_argument("--videos-per-split", type=int, default=10)
     parser.add_argument("--frame-stride", type=int, default=5)
     parser.add_argument("--max-seq-len", type=int, default=32)
