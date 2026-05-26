@@ -17,58 +17,17 @@ import torch
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
-from torch.utils.data import DataLoader, Dataset
-from transformers import CLIPModel, CLIPProcessor
+from torch.utils.data import DataLoader
 
 from video_dataset import (
-    VideoSample,
     build_split,
-    resize_embedding_sequence,
-    sample_video_frames,
     save_split_manifest,
     scan_all_classes,
 )
+from video_embedding_cache import CachedEmbeddingDataset, CachedSample, extract_or_load_embeddings
 
 
 # If --class-ids is omitted, the script will scan the videos directory for all available classes.
-
-
-@dataclass
-class CachedSample:
-    embedding_path: Path
-    video_path: Path
-    class_id: int
-    class_index: int
-    split: str
-    valid_length: int  # Non-padding rows in the embeddings tensor; see resize_embedding_sequence.
-
-    def to_record(self) -> dict[str, object]:
-        return {
-            "embedding_path": str(self.embedding_path),
-            "video_path": str(self.video_path),
-            "class_id": self.class_id,
-            "class_index": self.class_index,
-            "split": self.split,
-            "valid_length": self.valid_length,
-        }
-
-
-class CachedEmbeddingDataset(Dataset):
-    """Loads all .pt embedding files into memory once (small prototype datasets)."""
-
-    def __init__(self, samples: list[CachedSample]) -> None:
-        self.samples = samples
-        self.items = [torch.load(sample.embedding_path, map_location="cpu") for sample in samples]
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        item = self.items[index]
-        embeddings = item["embeddings"].float()
-        valid_length = torch.tensor(item["valid_length"], dtype=torch.long)
-        label = torch.tensor(item["class_index"], dtype=torch.long)
-        return embeddings, valid_length, label
 
 
 class GRUVideoClassifier(nn.Module):
@@ -136,195 +95,6 @@ def resolve_device(requested_device: str) -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
-
-
-def get_embedding_cache_path(cache_dir: Path, sample: VideoSample) -> Path:
-    """One .pt file per video stem, under a split subfolder to avoid accidental overlap."""
-    return cache_dir / "embeddings" / sample.split / f"{sample.video_path.stem}.pt"
-
-
-def build_cache_metadata(
-    sample: VideoSample,
-    *,
-    model_name: str,
-    frame_stride: int,
-    max_seq_len: int,
-) -> dict[str, object]:
-    return {
-        "model_name": model_name,
-        "frame_stride": frame_stride,
-        "max_seq_len": max_seq_len,
-        "video_path": str(sample.video_path),
-        "split": sample.split,
-        "class_id": sample.class_id,
-        "class_index": sample.class_index,
-    }
-
-
-def is_cache_compatible(
-    payload: dict[str, object],
-    sample: VideoSample,
-    *,
-    model_name: str,
-    frame_stride: int,
-    max_seq_len: int,
-) -> bool:
-    embeddings = payload.get("embeddings")
-    valid_length = payload.get("valid_length")
-    metadata = payload.get("cache_metadata")
-
-    if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:
-        return False
-    if embeddings.shape[0] != max_seq_len:
-        return False
-    if not isinstance(valid_length, int):
-        return False
-    if valid_length < 1 or valid_length > max_seq_len:
-        return False
-    if not isinstance(metadata, dict):
-        return False
-
-    expected_metadata = build_cache_metadata(
-        sample,
-        model_name=model_name,
-        frame_stride=frame_stride,
-        max_seq_len=max_seq_len,
-    )
-    return metadata == expected_metadata
-
-
-def embed_video(
-    sample: VideoSample,
-    *,
-    processor: CLIPProcessor,
-    model: CLIPModel,
-    device: torch.device,
-    frame_stride: int,
-    max_seq_len: int,
-    batch_size: int,
-) -> tuple[torch.Tensor, int]:
-    """Run CLIP on strided RGB frames, L2-normalize per frame, then fix sequence length."""
-    frames = sample_video_frames(sample.video_path, frame_stride)
-    features: list[torch.Tensor] = []
-
-    for start in range(0, len(frames), batch_size):
-        frame_batch = frames[start : start + batch_size]
-        inputs = processor(images=frame_batch, return_tensors="pt")
-        pixel_values = inputs["pixel_values"].to(device)
-        with torch.inference_mode():
-            batch_features = model.get_image_features(pixel_values=pixel_values)
-        if hasattr(batch_features, "pooler_output"):
-            batch_features = batch_features.pooler_output
-        batch_features = torch.nn.functional.normalize(batch_features, dim=-1)
-        features.append(batch_features.cpu())
-
-    stacked = torch.cat(features, dim=0)
-    return resize_embedding_sequence(stacked, max_seq_len)
-
-
-def extract_or_load_embeddings(
-    split: dict[str, list[VideoSample]],
-    *,
-    cache_dir: Path,
-    model_name: str,
-    frame_stride: int,
-    max_seq_len: int,
-    device: torch.device,
-    batch_size: int,
-    force_extract: bool,
-    seed: int,
-) -> dict[str, list[CachedSample]]:
-    """Write selected_split.json; fill cache/embeddings/<split>/*.pt when missing or forced."""
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = cache_dir / "selected_split.json"
-    save_split_manifest(
-        split,
-        manifest_path,
-        seed=seed,
-        frame_stride=frame_stride,
-        max_seq_len=max_seq_len,
-    )
-
-    processor: CLIPProcessor | None = None
-    model: CLIPModel | None = None
-
-    cached: dict[str, list[CachedSample]] = {"train": [], "test": []}
-    refreshed_cache_files = 0
-
-    for split_name in ("train", "test"):
-        for sample in split[split_name]:
-            cache_path = get_embedding_cache_path(cache_dir, sample)
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            cache_payload: dict[str, object] | None = None
-            should_extract = force_extract or not cache_path.exists()
-            if not should_extract:
-                cache_payload = torch.load(cache_path, map_location="cpu")
-                should_extract = not is_cache_compatible(
-                    cache_payload,
-                    sample,
-                    model_name=model_name,
-                    frame_stride=frame_stride,
-                    max_seq_len=max_seq_len,
-                )
-
-            if should_extract:
-                # Lazy-load CLIP only if at least one video needs extraction.
-                if processor is None or model is None:
-                    processor = CLIPProcessor.from_pretrained(model_name)
-                    model = CLIPModel.from_pretrained(model_name).to(device)
-                    model.eval()
-                embeddings, valid_length = embed_video(
-                    sample,
-                    processor=processor,
-                    model=model,
-                    device=device,
-                    frame_stride=frame_stride,
-                    max_seq_len=max_seq_len,
-                    batch_size=batch_size,
-                )
-                torch.save(
-                    {
-                        "embeddings": embeddings,
-                        "valid_length": valid_length,
-                        "class_id": sample.class_id,
-                        "class_index": sample.class_index,
-                        "video_path": str(sample.video_path),
-                        "split": sample.split,
-                        "cache_metadata": build_cache_metadata(
-                            sample,
-                            model_name=model_name,
-                            frame_stride=frame_stride,
-                            max_seq_len=max_seq_len,
-                        ),
-                    },
-                    cache_path,
-                )
-                refreshed_cache_files += 1
-            else:
-                assert cache_payload is not None
-                valid_length = int(cache_payload["valid_length"])
-
-            cached[split_name].append(
-                CachedSample(
-                    embedding_path=cache_path,
-                    video_path=sample.video_path,
-                    class_id=sample.class_id,
-                    class_index=sample.class_index,
-                    split=sample.split,
-                    valid_length=valid_length,
-                )
-            )
-
-    # Human-readable index of all cached tensors (paths, labels, valid lengths).
-    records_path = cache_dir / "embedding_manifest.json"
-    payload = {
-        split_name: [sample.to_record() for sample in samples]
-        for split_name, samples in cached.items()
-    }
-    records_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    if refreshed_cache_files:
-        print(f"Refreshed {refreshed_cache_files} cached embedding files.")
-    return cached
 
 
 def train_epoch(
@@ -416,6 +186,13 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         videos_per_split=args.videos_per_split,
         seed=args.seed,
     )
+    save_split_manifest(
+        split,
+        artifacts_dir / "selected_split.json",
+        seed=args.seed,
+        frame_stride=args.frame_stride,
+        max_seq_len=args.max_seq_len,
+    )
 
     cached = extract_or_load_embeddings(
         split,
@@ -426,7 +203,6 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         device=device,
         batch_size=args.clip_batch_size,
         force_extract=args.force_extract,
-        seed=args.seed,
     )
 
     if args.extract_only:
