@@ -25,35 +25,41 @@ The split is deterministic because the script uses a fixed random seed.
 
 ## Files
 
-- `video_dataset.py`: dataset discovery, deterministic splitting, frame sampling
-- `train_video_classifier.py`: CLIP embedding extraction, cache creation, stronger bidirectional GRU training, evaluation
-- `main.py`: thin entry point that forwards to the training script
+- `src/vlm/data/`: dataset discovery, deterministic splitting, and frame sampling
+- `src/vlm/embeddings/`: CLIP extraction, augmentation, and compatible caching
+- `src/vlm/models/`: GRU and prototype-similarity classifiers
+- `src/vlm/training/`: multiclass, prototype, and binary pipelines
+- `main.py` and the former top-level scripts: compatibility wrappers
+- `archive/legacy_scripts/`: frozen pre-restructure standalone implementations
 
 ## Run
 
 Extract CLIP embeddings only:
 
 ```bash
-python3 main.py --extract-only
+uv run vlm embeddings extract --pipeline multiclass
 ```
 
 Run the full prototype:
 
 ```bash
-python3 main.py
+uv run vlm train multiclass
 ```
 
 Run with a smaller number of epochs:
 
 ```bash
-python3 main.py --epochs 5
+uv run vlm train multiclass --epochs 5
 ```
 
 Force the embedding cache to rebuild:
 
 ```bash
-python3 main.py --force-extract
+uv run vlm train multiclass --force-extract
 ```
+
+The original `python3 main.py ...` forms remain available through compatibility
+wrappers.
 
 ## Outputs
 
