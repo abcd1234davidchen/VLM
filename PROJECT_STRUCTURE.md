@@ -48,7 +48,6 @@
 │           ├── xclip.py
 │           └── xclip_vision.py
 ├── archive/
-│   ├── README.md
 │   └── legacy_scripts/                    # frozen pre-restructure sources
 │       ├── main.py
 │       ├── train_video_classifier.py
@@ -59,36 +58,38 @@
 │       ├── clipModelTest.py
 │       ├── XclipModelTest.py
 │       └── XCVisionTest.py
-├── main.py                                # compatibility wrapper only
-├── train_video_classifier.py              # compatibility wrapper only
-├── video_embeddings_classifier.py         # compatibility wrapper only
-├── train_binary_video_classifier.py       # compatibility wrapper only
-├── video_dataset.py                       # compatibility re-exports only
-├── video_embedding_cache.py               # compatibility re-exports only
-├── clipModelTest.py                       # compatibility wrapper only
-├── XclipModelTest.py                      # compatibility wrapper only
-└── XCVisionTest.py                        # compatibility wrapper only
+└── main.py                                # compatibility entry point
 ```
 
 The complete pre-restructure contents of the old Python files move into
 `archive/legacy_scripts/` after local work and the latest `origin/main` have
 been integrated. Those archived files are frozen historical references.
 
-The same filenames at the repository root are newly written, minimal
-compatibility wrappers. They contain no training, model, cache, evaluation, or
-experiment implementation. Active implementation belongs in `src/vlm/`, and
-nothing in active code may import from `archive/`.
+The archive is inert: active code and compatibility wrappers must never import
+from it, and new features or fixes belong in `src/vlm/`. Git history and the
+active package are authoritative; archived files exist only to inspect the
+pre-restructure implementations.
+
+The former repository-root script wrappers have been removed. Active
+implementation belongs in `src/vlm/`, and nothing in active code may import
+from `archive/`. `main.py` remains as a minimal compatibility entry point for
+the original default multiclass command.
 
 In other words:
 
 ```text
 old full implementation  → archive/legacy_scripts/<old filename>
 new implementation       → src/vlm/<responsibility-specific module>
-old root filename         → tiny compatibility wrapper only
+old root filename         → removed; use the unified CLI
 ```
 
 Each package directory under `src/vlm/` also contains its corresponding
 `__init__.py`.
+
+`README.md` and this file are the project's only maintained Markdown
+documents. `README.md` owns setup, commands, pipeline behavior, sampling,
+compatibility policy, research links, and the roadmap. This file owns the
+directory tree, module boundaries, legacy mappings, and output locations.
 
 ## Installation
 
@@ -135,11 +136,11 @@ uv run vlm experiment xclip
 uv run vlm experiment xclip-vision
 ```
 
-## Legacy Command Mapping
+## Legacy Command Equivalents
 
-These commands remain valid after restructuring:
+Use these unified commands in place of the former standalone scripts:
 
-| Existing command | Unified equivalent |
+| Former command | Unified equivalent |
 |---|---|
 | `python main.py` | `uv run vlm train multiclass` |
 | `python train_video_classifier.py` | `uv run vlm train multiclass` |
@@ -149,8 +150,23 @@ These commands remain valid after restructuring:
 | `python XclipModelTest.py` | `uv run vlm experiment xclip` |
 | `python XCVisionTest.py` | `uv run vlm experiment xclip-vision` |
 
-Arguments supplied to an existing training script are forwarded to the
-corresponding unified pipeline.
+The archived scripts are not active entry points and should not be used for new
+runs.
+
+Former compatibility imports map to the active package:
+
+| Former import surface | Active package |
+|---|---|
+| `video_dataset` | `vlm.data` |
+| `video_embedding_cache` | `vlm.embeddings` |
+| `train_video_classifier` | `vlm.training.multiclass`, `vlm.models.gru`, and `vlm.evaluation.multiclass` |
+| `video_embeddings_classifier` | `vlm.training.prototype` and `vlm.models.prototype` |
+| `train_binary_video_classifier` | `vlm.training.binary`, `vlm.models.gru`, and `vlm.evaluation.binary` |
+| CLIP/XCLIP test scripts | `vlm.experiments` |
+
+The underlying models, data helpers, cache operations, training pipelines,
+evaluation functions, and experiments remain available. Only imports through
+the removed repository-root wrapper modules no longer resolve.
 
 ## Models and Experiments
 
