@@ -79,8 +79,12 @@
 - [x] 使用 pretrained checkpoint 原生的八幀輸入，將 512 維 video feature 傳入 LayerNorm、dropout 與 linear classification head。
 - [x] 第一階段凍結全部 XCLIP 參數，只訓練 classification head。
 - [ ] 評估解凍 MIT 與 visual projection；只有 validation 結果支持時，才考慮部分或完整 fine-tune vision encoder。
-- [ ] 對長影片評估多個八幀 temporal windows 並聚合 logits，不依賴單一
-      random window。
+- [ ] 將 SkeletonCLIP teacher distillation 作為優先的 representation adaptation 路線：teacher 使用 NTU skeleton 並在 training split 訓練，RGB XCLIP student 先以 ground-truth action cross-entropy 加 teacher／student logit KL loss 訓練，再用受控 ablation 評估 projected feature cosine loss。
+- [ ] 第一版 distillation student 在 XCLIP MIT attention 加入 LoRA；只有 validation 支持時才將 LoRA 擴展到 vision encoder 上層。Ground-truth loss 必須保留，避免 student 完全複製 teacher 錯誤。
+- [ ] Distillation 前先單獨評估 SkeletonCLIP teacher，並以 NTU sample identity 精確對齊 RGB 與 skeleton。Teacher 不得使用 validation／test labels 訓練，最終 validation／test 必須以 RGB student 單獨推理。
+- [ ] LoRA training 必須執行線上 XCLIP forward／backward，不能沿用 frozen baseline 的 post-XCLIP 512 維 feature cache；訓練完成並固定 student 後，merge LoRA 到 base weights，再以 merged checkpoint 重建新的 evaluation feature cache。
+- [ ] 部署合約維持 RGB-only inference：不載入 SkeletonCLIP、skeleton data、pose estimator、distillation loss、optimizer 或 backward graph。Merged LoRA 不增加額外 adapter branch；推理成本主要仍是八幀 decoding 與一次 XCLIP forward。
+- [ ] 對長影片評估多個八幀 temporal windows 並聚合 logits，不依賴單一 random window。
 - [x] XCLIP 支援相同的 participant-disjoint split manifest、validation checkpoint selection 與 random seed，並以獨立 artifact 目錄執行。
 - [ ] 完整 benchmark 再統一共同 metrics、augmentation／balancing policy 與多 seed 報告後，比較 CLIP＋BiGRU 和 XCLIP。
 
