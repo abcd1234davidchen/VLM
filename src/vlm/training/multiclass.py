@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -13,8 +14,11 @@ from torch.utils.data import DataLoader
 from vlm.config import TrainingConfig
 from vlm.data import (
     build_split,
+    load_split_manifest,
+    load_split_manifest_metadata,
     save_split_manifest,
     scan_all_classes,
+    select_split_classes,
     summarize_split_samples,
 )
 from vlm.embeddings import (
@@ -42,10 +46,44 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     config = TrainingConfig.from_namespace(args)
     set_seed(config.seed)
     config.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    source_manifest = (
+        Path(args.split_manifest)
+        if args.split_manifest
+        else None
+    )
+    loaded_split = (
+        load_split_manifest(source_manifest)
+        if source_manifest is not None
+        else None
+    )
+    source_metadata = (
+        load_split_manifest_metadata(source_manifest)
+        if source_manifest is not None
+        else {}
+    )
+    if loaded_split is not None and (
+        args.max_videos_per_class is not None
+        or args.videos_per_split is not None
+    ):
+        raise ValueError(
+            "A loaded --split-manifest already fixes sample membership; "
+            "do not combine it with a video cap."
+        )
+    discovered_class_ids = (
+        sorted(
+            {
+                sample.class_id
+                for samples in loaded_split.values()
+                for sample in samples
+            }
+        )
+        if loaded_split is not None
+        else scan_all_classes(config.videos_dir)
+    )
     class_ids = (
         list(args.class_ids)
         if args.class_ids
-        else scan_all_classes(config.videos_dir)
+        else discovered_class_ids
     )
     if not class_ids:
         raise ValueError(
@@ -64,14 +102,18 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             "Warning: --videos-per-split is deprecated; prefer "
             "--max-videos-per-class."
         )
-    split = build_split(
-        videos_dir=config.videos_dir,
-        class_ids=class_ids,
-        videos_per_split=args.videos_per_split,
-        seed=config.seed,
-        max_videos_per_class=args.max_videos_per_class,
-        val_fraction=args.val_fraction,
-        test_fraction=args.test_fraction,
+    split = (
+        select_split_classes(loaded_split, class_ids)
+        if loaded_split is not None
+        else build_split(
+            videos_dir=config.videos_dir,
+            class_ids=class_ids,
+            videos_per_split=args.videos_per_split,
+            seed=config.seed,
+            max_videos_per_class=args.max_videos_per_class,
+            val_fraction=args.val_fraction,
+            test_fraction=args.test_fraction,
+        )
     )
     split_summary = {
         name: summarize_split_samples(samples)
@@ -81,9 +123,16 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     save_split_manifest(
         split,
         config.artifacts_dir / "selected_split.json",
-        seed=config.seed,
+        seed=int(source_metadata.get("seed", config.seed)),
         frame_stride=config.frame_stride,
         max_seq_len=config.max_seq_len,
+        split_strategy=str(
+            source_metadata.get(
+                "split_strategy",
+                "participant_disjoint",
+            )
+        ),
+        source_manifest=source_manifest,
     )
     cached = extract_or_load_embeddings(
         split,
@@ -263,7 +312,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Train a multiclass video classifier from CLIP frame embeddings."
         )
     )
-    add_multiclass_arguments(parser, artifacts_dir="artifacts")
+    add_multiclass_arguments(
+        parser,
+        artifacts_dir="artifacts/multiclass",
+    )
     return parser
 
 

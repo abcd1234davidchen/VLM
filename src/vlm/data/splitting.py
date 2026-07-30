@@ -12,6 +12,16 @@ from typing import Iterable
 from .discovery import discover_videos, parse_participant_id
 
 
+SPLIT_METADATA_KEYS = {
+    "seed",
+    "frame_stride",
+    "max_seq_len",
+    "split_strategy",
+    "participants",
+    "source_manifest",
+}
+
+
 @dataclass(frozen=True)
 class VideoSample:
     video_path: Path
@@ -171,6 +181,48 @@ def summarize_split_samples(
     }
 
 
+def select_split_classes(
+    split: dict[str, list[VideoSample]],
+    class_ids: Iterable[int],
+) -> dict[str, list[VideoSample]]:
+    """Filter a loaded manifest and assign contiguous class indices."""
+    requested_ids = list(class_ids)
+    class_index_by_id = {
+        class_id: class_index
+        for class_index, class_id in enumerate(requested_ids)
+    }
+    selected = {
+        split_name: [
+            VideoSample(
+                video_path=sample.video_path,
+                class_id=sample.class_id,
+                class_index=class_index_by_id[sample.class_id],
+                split=split_name,
+            )
+            for sample in samples
+            if sample.class_id in class_index_by_id
+        ]
+        for split_name, samples in split.items()
+    }
+    missing = {
+        class_id
+        for class_id in requested_ids
+        if any(
+            not any(
+                sample.class_id == class_id
+                for sample in selected[split_name]
+            )
+            for split_name in ("train", "val", "test")
+        )
+    }
+    if missing:
+        raise ValueError(
+            "Split manifest does not contain every requested class in "
+            f"train, val, and test: {sorted(missing)}."
+        )
+    return selected
+
+
 def validate_split_fractions(
     *,
     val_fraction: float,
@@ -242,13 +294,20 @@ def save_split_manifest(
     seed: int,
     frame_stride: int,
     max_seq_len: int,
+    split_strategy: str = "participant_disjoint",
+    source_manifest: Path | None = None,
 ) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "seed": seed,
         "frame_stride": frame_stride,
         "max_seq_len": max_seq_len,
-        "split_strategy": "participant_disjoint",
+        "split_strategy": split_strategy,
+        "source_manifest": (
+            str(source_manifest)
+            if source_manifest is not None
+            else None
+        ),
         "participants": {
             split_name: sorted(
                 {
@@ -270,14 +329,7 @@ def load_split_manifest(
     manifest_path: Path,
 ) -> dict[str, list[VideoSample]]:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    metadata_keys = {
-        "seed",
-        "frame_stride",
-        "max_seq_len",
-        "split_strategy",
-        "participants",
-    }
-    return {
+    split = {
         split_name: [
             VideoSample(
                 video_path=Path(item["video_path"]),
@@ -288,5 +340,73 @@ def load_split_manifest(
             for item in records
         ]
         for split_name, records in payload.items()
-        if split_name not in metadata_keys
+        if split_name not in SPLIT_METADATA_KEYS
     }
+    validate_loaded_split(split, manifest_path=manifest_path)
+    return split
+
+
+def load_split_manifest_metadata(
+    manifest_path: Path,
+) -> dict[str, object]:
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return {
+        key: payload[key]
+        for key in SPLIT_METADATA_KEYS
+        if key in payload
+    }
+
+
+def validate_loaded_split(
+    split: dict[str, list[VideoSample]],
+    *,
+    manifest_path: Path | None = None,
+) -> None:
+    """Reject malformed manifests and participant leakage across splits."""
+    location = (
+        f" in {manifest_path}"
+        if manifest_path is not None
+        else ""
+    )
+    required_splits = {"train", "val", "test"}
+    if set(split) != required_splits:
+        raise ValueError(
+            f"Split manifest{location} must contain exactly "
+            "train, val, and test."
+        )
+
+    participants_by_split: dict[str, set[int]] = {}
+    seen_video_paths: set[Path] = set()
+    for split_name, samples in split.items():
+        participants_by_split[split_name] = set()
+        for sample in samples:
+            if sample.split != split_name:
+                raise ValueError(
+                    f"Sample {sample.video_path} is stored under "
+                    f"{split_name!r} but declares split "
+                    f"{sample.split!r}{location}."
+                )
+            if sample.video_path in seen_video_paths:
+                raise ValueError(
+                    f"Video appears in more than one split: "
+                    f"{sample.video_path}{location}."
+                )
+            seen_video_paths.add(sample.video_path)
+            participants_by_split[split_name].add(
+                parse_participant_id(sample.video_path)
+            )
+
+    for first, second in (
+        ("train", "val"),
+        ("train", "test"),
+        ("val", "test"),
+    ):
+        overlap = (
+            participants_by_split[first]
+            & participants_by_split[second]
+        )
+        if overlap:
+            raise ValueError(
+                f"Participant leakage between {first} and {second}"
+                f"{location}: {sorted(overlap)}."
+            )

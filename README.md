@@ -95,6 +95,9 @@ creates deterministic augmented cache entries for the minority training class
 using horizontal flip, small rotation, color jitter, and random crop by
 default. Validation and test videos are not augmented.
 
+Cache filenames include a hash of the source video path, so videos with the
+same filename in different directories cannot collide.
+
 The standalone CLIP/XCLIP experiments use a separate strategy: they choose a
 seeded random contiguous clip and currently read 8 frames for CLIP/XCLIP or 32
 frames for XCLIP vision. This experiment sampling does not affect training.
@@ -116,6 +119,23 @@ Default pretrained models remain:
 
 - `openai/clip-vit-base-patch32`;
 - `microsoft/xclip-base-patch32`.
+
+### Reusing a Split
+
+Each training command can reuse an existing split manifest:
+
+```bash
+uv run vlm train multiclass \
+  --split-manifest artifacts/shared/selected_split.json
+```
+
+Loaded manifests are checked for duplicate videos, mismatched split labels,
+and participants appearing in more than one split. Multiclass and prototype
+derive contiguous action indices from the selected classes; binary derives its
+safe/danger labels from the same video records.
+
+Default artifacts are isolated under `artifacts/multiclass`,
+`artifacts/prototype`, and `artifacts/binary`.
 
 ## Archive and Legacy Code
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -60,7 +61,10 @@ def get_embedding_cache_path(
     max_seq_len: int,
     augmentation: FrameAugmentation | None = None,
 ) -> Path:
-    stem = sample.video_path.stem
+    path_hash = hashlib.sha256(
+        sample.video_path.as_posix().encode("utf-8")
+    ).hexdigest()[:12]
+    stem = f"{sample.video_path.stem}__path_{path_hash}"
     if augmentation is not None:
         stem = f"{stem}__aug_{augmentation.cache_key()}"
     return (

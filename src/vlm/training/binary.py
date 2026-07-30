@@ -18,6 +18,8 @@ from vlm.data import (
     VideoSample,
     assign_participants_to_splits,
     iter_video_paths,
+    load_split_manifest,
+    load_split_manifest_metadata,
     parse_class_id,
     parse_participant_id,
     save_split_manifest,
@@ -268,12 +270,36 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     set_seed(config.seed)
     config.artifacts_dir.mkdir(parents=True, exist_ok=True)
     device = resolve_device(config.device)
-    split = build_binary_split(
-        config.videos_dir,
-        test_fraction=args.test_fraction,
-        val_fraction=args.val_fraction,
-        seed=config.seed,
-        max_videos_per_category=args.max_videos_per_category,
+    source_manifest = (
+        Path(args.split_manifest)
+        if args.split_manifest
+        else None
+    )
+    source_metadata = (
+        load_split_manifest_metadata(source_manifest)
+        if source_manifest is not None
+        else {}
+    )
+    if (
+        args.split_manifest
+        and args.max_videos_per_category is not None
+    ):
+        raise ValueError(
+            "A loaded --split-manifest already fixes sample membership; "
+            "do not combine it with --max-videos-per-category."
+        )
+    split = (
+        _relabel_binary_split(
+            load_split_manifest(source_manifest)
+        )
+        if source_manifest is not None
+        else build_binary_split(
+            config.videos_dir,
+            test_fraction=args.test_fraction,
+            val_fraction=args.val_fraction,
+            seed=config.seed,
+            max_videos_per_category=args.max_videos_per_category,
+        )
     )
     split_summary = {
         name: summarize_samples(samples)
@@ -294,9 +320,16 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     save_split_manifest(
         split,
         config.artifacts_dir / "selected_split.json",
-        seed=config.seed,
+        seed=int(source_metadata.get("seed", config.seed)),
         frame_stride=config.frame_stride,
         max_seq_len=config.max_seq_len,
+        split_strategy=str(
+            source_metadata.get(
+                "split_strategy",
+                "participant_disjoint",
+            )
+        ),
+        source_manifest=source_manifest,
     )
     print(
         json.dumps(
@@ -543,6 +576,23 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     print("Final test metrics:")
     print(json.dumps(final_metrics, indent=2))
     return results
+
+
+def _relabel_binary_split(
+    split: dict[str, list[VideoSample]],
+) -> dict[str, list[VideoSample]]:
+    return {
+        split_name: [
+            VideoSample(
+                video_path=sample.video_path,
+                class_id=sample.class_id,
+                class_index=binary_class_index(sample.class_id),
+                split=split_name,
+            )
+            for sample in samples
+        ]
+        for split_name, samples in split.items()
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:

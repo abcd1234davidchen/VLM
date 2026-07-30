@@ -8,8 +8,10 @@ from pathlib import Path
 from vlm.data import (
     build_split,
     load_split_manifest,
+    load_split_manifest_metadata,
     parse_participant_id,
     save_split_manifest,
+    select_split_classes,
 )
 
 
@@ -144,6 +146,38 @@ class ParticipantDisjointSplitTest(unittest.TestCase):
             )
             reloaded = load_split_manifest(manifest_path)
             self.assertEqual(split, reloaded)
+            metadata = load_split_manifest_metadata(manifest_path)
+            self.assertEqual(metadata["seed"], 5)
+            self.assertEqual(
+                metadata["split_strategy"],
+                "participant_disjoint",
+            )
+
+    def test_loaded_manifest_can_be_filtered_and_reindexed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            videos_dir = Path(temporary_directory)
+            for participant_id in range(1, 7):
+                for class_id in (42, 43):
+                    (
+                        videos_dir
+                        / _video_name(participant_id, class_id)
+                    ).touch()
+            split = build_split(
+                videos_dir,
+                class_ids=[42, 43],
+                seed=9,
+            )
+
+            selected = select_split_classes(split, [43])
+
+            self.assertTrue(
+                all(
+                    sample.class_id == 43
+                    and sample.class_index == 0
+                    for samples in selected.values()
+                    for sample in samples
+                )
+            )
 
 
 if __name__ == "__main__":

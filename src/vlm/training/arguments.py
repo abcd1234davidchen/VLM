@@ -14,6 +14,14 @@ def add_common_training_arguments(
     parser.add_argument("--cache-dir", default="cache")
     parser.add_argument("--artifacts-dir", default=artifacts_dir)
     parser.add_argument(
+        "--split-manifest",
+        default=None,
+        help=(
+            "Reuse an existing selected_split.json instead of generating "
+            "a new split."
+        ),
+    )
+    parser.add_argument(
         "--model-name",
         default="openai/clip-vit-base-patch32",
     )
