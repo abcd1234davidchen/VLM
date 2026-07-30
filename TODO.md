@@ -84,6 +84,17 @@
 - [x] XCLIP 支援相同的 participant-disjoint split manifest、validation checkpoint selection 與 random seed，並以獨立 artifact 目錄執行。
 - [ ] 完整 benchmark 再統一共同 metrics、augmentation／balancing policy 與多 seed 報告後，比較 CLIP＋BiGRU 和 XCLIP。
 
+## 訓練管線架構重整
+
+> 目前四條管線皆可獨立執行；以下屬於降低重複與方便後續擴充的架構債，不阻擋 frozen XCLIP baseline 在伺服器執行。新增第五條訓練管線前應優先完成。
+
+- [ ] 抽出共用 multiclass split preparation，統一 class discovery、`--split-manifest` reuse、video-cap validation、class reindexing、split summary 與 manifest 寫入。
+- [ ] 讓 training engine 透過清楚的 batch／forward adapter 同時支援 variable-length sequence 與 fixed video feature，合併目前重複的 `train_epoch()` 與 `train_feature_epoch()`，但不要把 binary 專屬 loss 與選模規則藏進難以理解的萬用介面。
+- [ ] 合併 sequence classifier 與 fixed-feature classifier 的 multiclass evaluation，共用 prediction-row schema 與 accuracy 計算。
+- [ ] 抽出 validation-selected training loop 與共用 artifact orchestration，統一 history、best-checkpoint restore、test-once evaluation、checkpoint、results JSON 與 accuracy plot 寫入。
+- [ ] 重整後將各 pipeline module 保持為薄的 task configuration／backend wiring，並用現有 contract tests 與端到端 smoke test確認輸出、split membership、cache identity 與 validation/test 行為不變。
+- [ ] 暫不建立過度泛化的 universal pipeline；binary augmentation、class balancing、macro-F1／balanced-accuracy checkpoint selection 等任務差異必須維持明確且可審查。
+
 ## 分層式 Danger 與 Action 預測
 
 - [ ] 訓練前定義並記錄 action-to-danger label ontology。不可在未確認產品
