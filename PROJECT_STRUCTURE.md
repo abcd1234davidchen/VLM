@@ -17,6 +17,7 @@
 │       ├── __main__.py
 │       ├── cli.py
 │       ├── config.py
+│       ├── xclip_features.py
 │       ├── data/
 │       │   ├── discovery.py
 │       │   ├── splitting.py
@@ -29,13 +30,15 @@
 │       ├── models/
 │       │   ├── gru.py
 │       │   ├── prototype.py
-│       │   └── temporal.py
+│       │   ├── temporal.py
+│       │   └── xclip.py
 │       ├── training/
 │       │   ├── arguments.py
 │       │   ├── binary.py
 │       │   ├── engine.py
 │       │   ├── multiclass.py
-│       │   └── prototype.py
+│       │   ├── prototype.py
+│       │   └── xclip.py
 │       ├── evaluation/
 │       │   ├── binary.py
 │       │   └── multiclass.py
@@ -114,6 +117,7 @@ uv run python -m vlm <command>
 uv run vlm train multiclass
 uv run vlm train prototype
 uv run vlm train binary
+uv run vlm train xclip
 ```
 
 Existing training arguments such as dataset path, cache path, artifact path,
@@ -126,6 +130,7 @@ and force-extraction options remain available on the relevant command.
 uv run vlm embeddings extract --pipeline multiclass
 uv run vlm embeddings extract --pipeline prototype
 uv run vlm embeddings extract --pipeline binary
+uv run vlm embeddings extract --pipeline xclip
 ```
 
 ### Experiments
@@ -175,6 +180,7 @@ The following remain available:
 - `GRUVideoClassifier`;
 - `PrototypeVideoClassifier`;
 - binary safe/danger GRU classification;
+- frozen XCLIP video-feature classification;
 - per-frame CLIP image/text similarity;
 - XCLIP video/text similarity;
 - XCLIP vision feature extraction.
@@ -192,11 +198,15 @@ Legacy defaults remain supported:
 |---|---|
 | Embedding tensors | `cache/embeddings/` |
 | Embedding manifest | `cache/embedding_manifest.json` |
-| Multiclass/prototype split | `artifacts/selected_split.json` |
-| Multiclass/prototype checkpoint | `artifacts/video_classifier.pt` |
-| Multiclass/prototype results | `artifacts/evaluation_results.json` |
-| Multiclass/prototype accuracy plot | `artifacts/accuracy_graph.png` |
+| Multiclass artifacts | `artifacts/multiclass/` |
+| Prototype artifacts | `artifacts/prototype/` |
 | Binary split | `artifacts/binary/selected_split.json` |
 | Binary checkpoint | `artifacts/binary/binary_video_classifier.pt` |
 | Binary results | `artifacts/binary/binary_evaluation_results.json` |
 | Binary accuracy plot | `artifacts/binary/accuracy_graph.png` |
+| XCLIP frozen features | `cache/xclip_features/` |
+| XCLIP feature manifest | `cache/xclip_feature_manifest.json` |
+| XCLIP split | `artifacts/xclip/selected_split.json` |
+| XCLIP checkpoint | `artifacts/xclip/xclip_classifier.pt` |
+| XCLIP results | `artifacts/xclip/evaluation_results.json` |
+| XCLIP accuracy plot | `artifacts/xclip/accuracy_graph.png` |

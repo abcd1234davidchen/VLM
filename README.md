@@ -22,10 +22,12 @@ Use the unified CLI for active development:
 uv run vlm train multiclass
 uv run vlm train prototype
 uv run vlm train binary
+uv run vlm train xclip
 
 uv run vlm embeddings extract --pipeline multiclass
 uv run vlm embeddings extract --pipeline prototype
 uv run vlm embeddings extract --pipeline binary
+uv run vlm embeddings extract --pipeline xclip
 
 uv run vlm experiment clip
 uv run vlm experiment xclip
@@ -38,27 +40,26 @@ training options.
 
 ## Training Pipelines
 
-All three training commands follow the same high-level flow:
+The four training commands follow the same high-level flow:
 
 ```text
 discover videos
-→ construct deterministic splits
-→ create or reuse CLIP frame-embedding cache
-→ load fixed-length embedding sequences
-→ train the selected temporal classifier
-→ evaluate
+→ construct or reuse a deterministic participant-disjoint split
+→ create or reuse the pipeline's frozen feature cache
+→ train the selected classifier
+→ choose the best validation checkpoint
+→ evaluate test once
 → write checkpoint, JSON results, split manifest, and accuracy plot
 ```
 
-They share data loading, CLIP extraction, caching, training utilities,
-evaluation helpers, and artifact writers, while retaining task-specific
-models and evaluation rules.
+They share split construction, validation checkpoint selection, evaluation helpers, and artifact writers while retaining model-specific feature caches and evaluation rules.
 
 | Command | Model | Current split | Evaluation behavior |
 |---|---|---|---|
 | `vlm train multiclass` | `GRUVideoClassifier` | All discovered videos, split into participant-disjoint train/validation/test | Selects the best checkpoint by validation accuracy, then evaluates test once |
 | `vlm train prototype` | `PrototypeVideoClassifier` | Same all-video, participant-disjoint train/validation/test split | Selects the best checkpoint by validation accuracy, then evaluates test once |
 | `vlm train binary` | Safe/danger `GRUVideoClassifier` | Participant-disjoint; approximately 2/3 train, 1/6 validation, 1/6 test | Uses validation macro F1, balanced accuracy, and accuracy to select the best checkpoint, then evaluates test once |
+| `vlm train xclip` | Frozen XCLIP video encoder plus `LayerNorm → Dropout → Linear` head | Same all-video, participant-disjoint train/validation/test split | Selects the best checkpoint by validation accuracy, then evaluates test once |
 
 In `PrototypeVideoClassifier`, “prototype” refers to learnable normalized class
 prototypes used to score a GRU-encoded video. It is distinct from the older use
@@ -94,7 +95,7 @@ Compatible embedding tensors are reused when the video, model, sampling strategy
 Cache filenames include a hash of the source video path, so videos with the
 same filename in different directories cannot collide.
 
-The standalone XCLIP and XCLIP-vision experiments deterministically select 8 frames uniformly across the complete video, matching the pretrained checkpoint's native frame count. The standalone per-frame CLIP experiment still uses its separate seeded random contiguous-clip strategy. Experiment sampling does not affect the three training pipelines.
+The XCLIP training pipeline and standalone XCLIP experiments deterministically select 8 frames uniformly across the complete video, matching the pretrained checkpoint's native frame count. Short videos repeat selected real frames rather than adding zero frames. The frozen training pipeline calls `XCLIPModel.get_video_features()`, caches one 512-dimensional video representation, and trains only a `LayerNorm → Dropout → Linear` classification head. The standalone per-frame CLIP experiment still uses its separate seeded random contiguous-clip strategy.
 
 ## Models and Experiments Maintained
 
@@ -107,7 +108,8 @@ The standalone XCLIP and XCLIP-vision experiments deterministically select 8 fra
 - checkpoint, JSON, manifest, and accuracy-plot output;
 - per-frame CLIP image/text similarity;
 - XCLIP video/text similarity;
-- XCLIP vision feature extraction.
+- XCLIP vision feature extraction;
+- frozen XCLIP video-feature classification.
 
 Default pretrained models remain:
 
@@ -128,8 +130,24 @@ and participants appearing in more than one split. Multiclass and prototype
 derive contiguous action indices from the selected classes; binary derives its
 safe/danger labels from the same video records.
 
-Default artifacts are isolated under `artifacts/multiclass`,
-`artifacts/prototype`, and `artifacts/binary`.
+Default artifacts are isolated under `artifacts/multiclass`, `artifacts/prototype`, `artifacts/binary`, and `artifacts/xclip`.
+
+### Frozen XCLIP Baseline
+
+Run the fourth training pipeline with all discovered classes and videos:
+
+```bash
+uv run vlm train xclip
+```
+
+For a faster cache-only server preparation or smoke run:
+
+```bash
+uv run vlm embeddings extract --pipeline xclip \
+  --max-videos-per-class 6
+```
+
+The first run downloads `microsoft/xclip-base-patch32`, samples eight deterministic whole-video frames per video, and writes frozen features under `cache/xclip_features/`. Training writes `selected_split.json`, `xclip_classifier.pt`, `evaluation_results.json`, and `accuracy_graph.png` under `artifacts/xclip/`. Pass the same canonical manifest used by another pipeline through `--split-manifest`; video membership remains identical while the XCLIP artifact records its own eight-frame sampling policy.
 
 ## Archive and Legacy Code
 
@@ -169,6 +187,7 @@ legacy command equivalents, and default output locations.
 ### Video and Frame Sampling
 
 - [x] Use deterministic whole-video uniform 8-frame sampling for XCLIP experiments.
+- [x] Add a frozen XCLIP video-feature classification pipeline.
 - [ ] Decide whether the standalone per-frame CLIP experiment should retain a random contiguous clip or cover the entire video.
 - [ ] Consider aggregating multiple temporal windows for long videos.
 - [ ] Expose experiment sampling strategy and frame sample rate as CLI options.

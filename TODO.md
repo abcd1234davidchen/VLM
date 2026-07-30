@@ -19,8 +19,7 @@
 - [ ] 產生一份 canonical split manifest，要求 multiclass、prototype、
       binary 與未來的 XCLIP 管線都讀取它，而不是各自重新產生 split。
       各任務的 label 應從相同的影片記錄衍生。
-      - 已完成基礎支援：三條現有管線都可透過 `--split-manifest` 重用
-        既有 manifest。
+      - 已完成基礎支援：四條現有管線都可透過 `--split-manifest` 重用既有 manifest。
 - [ ] 在每份實驗報告中明確記錄 split 身分，例如 manifest hash 或穩定的
       split ID；比較不同 manifest 的執行結果時應立即報錯。
 - [ ] 正式 benchmark 採用 NTU RGB+D 120 官方 cross-subject protocol；
@@ -51,9 +50,7 @@
 - [ ] 使用固定 seed 集合重跑 benchmark，報告 mean 與 standard deviation；
       在支援的平台啟用 deterministic PyTorch algorithms，並記錄仍不具
       deterministic 行為的 CUDA／MPS operations。
-- [x] 為 multiclass、prototype 與 binary 設定不同的預設 artifact 目錄，
-      避免連續執行時互相覆蓋 checkpoint、plot、manifest 或 evaluation
-      JSON。未來 XCLIP 也必須使用獨立目錄與檔名。
+- [x] 為 multiclass、prototype、binary 與 XCLIP 設定不同的預設 artifact 目錄，避免連續執行時互相覆蓋 checkpoint、plot、manifest 或 evaluation JSON。
 - [ ] 為每次執行加入 run ID，並記錄套件版本、device、命令列參數、Git
       revision、split ID、cache 設定與模型設定。
 - [x] 在 embedding cache filename 加入來源路徑 hash，避免不同資料夾中
@@ -77,22 +74,15 @@
 
 ## XCLIP 影片分類器
 
-- [ ] 新增 visual-only XCLIP video-classification baseline，和目前 frozen
-      CLIP frame encoder＋BiGRU 比較。
-- [ ] 使用 `XCLIPModel.get_video_features()`，而不是只使用
-      `XCLIPVisionModel`。`XCLIPVisionModel` 雖然包含 cross-frame
-      communication，但回傳的是逐幀 features；完整 video path 還保留
-      visual projection 與 Multiframe Integration Transformer（MIT），可在
-      不執行 text model 的情況下產生 video-level representation。
-- [ ] 先使用 pretrained checkpoint 原生的八幀輸入，將 512 維 video
-      feature 傳入 LayerNorm、dropout 與 linear classification head。
-- [ ] 分階段訓練：先凍結全部 XCLIP 參數，只訓練 classification head；
-      再評估解凍 MIT 與 visual projection。只有 validation 結果支持時，
-      才考慮部分或完整 fine-tune vision encoder。
+- [x] 新增 visual-only XCLIP video-classification baseline，和目前 frozen CLIP frame encoder＋BiGRU 比較。
+- [x] 使用 `XCLIPModel.get_video_features()`，保留 visual projection 與 Multiframe Integration Transformer（MIT）的完整 video path，不執行 text model。
+- [x] 使用 pretrained checkpoint 原生的八幀輸入，將 512 維 video feature 傳入 LayerNorm、dropout 與 linear classification head。
+- [x] 第一階段凍結全部 XCLIP 參數，只訓練 classification head。
+- [ ] 評估解凍 MIT 與 visual projection；只有 validation 結果支持時，才考慮部分或完整 fine-tune vision encoder。
 - [ ] 對長影片評估多個八幀 temporal windows 並聚合 logits，不依賴單一
       random window。
-- [ ] 使用相同的 participant-disjoint split、validation checkpoint
-      selection、metrics 與 random seeds，比較 CLIP＋BiGRU 和 XCLIP。
+- [x] XCLIP 支援相同的 participant-disjoint split manifest、validation checkpoint selection 與 random seed，並以獨立 artifact 目錄執行。
+- [ ] 完整 benchmark 再統一共同 metrics、augmentation／balancing policy 與多 seed 報告後，比較 CLIP＋BiGRU 和 XCLIP。
 
 ## 分層式 Danger 與 Action 預測
 

@@ -9,6 +9,7 @@ from vlm.training.multiclass import (
 from vlm.training.prototype import (
     build_parser as build_prototype_parser,
 )
+from vlm.training.xclip import build_parser as build_xclip_parser
 
 
 class TrainingArgumentTest(unittest.TestCase):
@@ -16,17 +17,20 @@ class TrainingArgumentTest(unittest.TestCase):
         multiclass = build_multiclass_parser().parse_args([])
         prototype = build_prototype_parser().parse_args([])
         binary = build_binary_parser().parse_args([])
+        xclip = build_xclip_parser().parse_args([])
 
         self.assertEqual(
             {
                 multiclass.artifacts_dir,
                 prototype.artifacts_dir,
                 binary.artifacts_dir,
+                xclip.artifacts_dir,
             },
             {
                 "artifacts/multiclass",
                 "artifacts/prototype",
                 "artifacts/binary",
+                "artifacts/xclip",
             },
         )
 
@@ -35,6 +39,7 @@ class TrainingArgumentTest(unittest.TestCase):
             build_multiclass_parser(),
             build_prototype_parser(),
             build_binary_parser(),
+            build_xclip_parser(),
         ):
             arguments = parser.parse_args(
                 ["--split-manifest", "artifacts/shared_split.json"]
@@ -53,6 +58,14 @@ class TrainingArgumentTest(unittest.TestCase):
             arguments = parser.parse_args([])
             self.assertEqual(arguments.sample_fps, 6.0)
             self.assertEqual(arguments.max_seq_len, 32)
+
+    def test_xclip_defaults_to_native_uniform_eight_frames(self) -> None:
+        arguments = build_xclip_parser().parse_args([])
+        self.assertEqual(
+            arguments.model_name,
+            "microsoft/xclip-base-patch32",
+        )
+        self.assertEqual(arguments.frames, 8)
 
 
 if __name__ == "__main__":

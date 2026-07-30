@@ -184,6 +184,36 @@ class ParticipantDisjointSplitTest(unittest.TestCase):
                 )
             )
 
+    def test_manifest_can_record_xclip_sampling_without_fps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for participant_id in range(1, 7):
+                (root / _video_name(participant_id, 42)).touch()
+            split = build_split(
+                root,
+                class_ids=[42],
+                videos_per_split=1,
+                seed=5,
+            )
+            manifest_path = root / "artifacts" / "selected_split.json"
+
+            save_split_manifest(
+                split,
+                manifest_path,
+                seed=5,
+                sample_fps=None,
+                max_seq_len=8,
+                frame_sampling_strategy="whole_video_uniform",
+            )
+
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertIsNone(payload["sample_fps"])
+            self.assertEqual(payload["max_seq_len"], 8)
+            self.assertEqual(
+                payload["frame_sampling_strategy"],
+                "whole_video_uniform",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

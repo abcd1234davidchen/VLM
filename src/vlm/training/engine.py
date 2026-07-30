@@ -101,3 +101,43 @@ def train_epoch(
             batches.set_postfix(loss=f"{batch_loss:.4f}")
 
     return total_loss / len(loader.dataset)
+
+
+def train_feature_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: nn.Module,
+    device: torch.device,
+    max_grad_norm: float,
+    epoch: int | None = None,
+) -> float:
+    """Train a classifier over one fixed feature vector per sample."""
+    model.train()
+    total_loss = 0.0
+    batches = (
+        tqdm(
+            loader,
+            desc=f"Epoch {epoch} Training",
+            leave=False,
+        )
+        if epoch is not None
+        else loader
+    )
+    for features, labels in batches:
+        features = features.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad()
+        logits = model(features)
+        loss = criterion(logits, labels)
+        loss.backward()
+        clip_grad_norm_(model.parameters(), max_grad_norm)
+        optimizer.step()
+
+        batch_loss = loss.item()
+        total_loss += batch_loss * features.size(0)
+        if epoch is not None:
+            batches.set_postfix(loss=f"{batch_loss:.4f}")
+
+    return total_loss / len(loader.dataset)

@@ -294,15 +294,16 @@ def save_split_manifest(
     manifest_path: Path,
     *,
     seed: int,
-    sample_fps: float,
+    sample_fps: float | None,
     max_seq_len: int,
     split_strategy: str = "participant_disjoint",
+    frame_sampling_strategy: str = "time_based_uniform_cap",
     source_manifest: Path | None = None,
 ) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "seed": seed,
-        "frame_sampling_strategy": "time_based_uniform_cap",
+        "frame_sampling_strategy": frame_sampling_strategy,
         "sample_fps": sample_fps,
         "max_seq_len": max_seq_len,
         "split_strategy": split_strategy,

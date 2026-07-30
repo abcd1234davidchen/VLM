@@ -12,6 +12,7 @@ TRAIN_COMMANDS = {
     "multiclass": "vlm.training.multiclass",
     "prototype": "vlm.training.prototype",
     "binary": "vlm.training.binary",
+    "xclip": "vlm.training.xclip",
 }
 EXPERIMENT_COMMANDS = {
     "clip": "vlm.experiments.clip_video",
@@ -84,7 +85,7 @@ def _dispatch_embeddings(argv: list[str]) -> None:
     if not argv or argv[0] in {"-h", "--help"}:
         print(
             "usage: vlm embeddings extract --pipeline "
-            "{multiclass,prototype,binary} [options]"
+            "{multiclass,prototype,binary,xclip} [options]"
         )
         return
     action, *remaining = argv
@@ -98,7 +99,7 @@ def _dispatch_embeddings(argv: list[str]) -> None:
     ):
         print(
             "usage: vlm embeddings extract --pipeline "
-            "{multiclass,prototype,binary} [options]\n\n"
+            "{multiclass,prototype,binary,xclip} [options]\n\n"
             "Select a pipeline, then append --help to see its options."
         )
         return
