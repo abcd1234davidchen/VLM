@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch
@@ -10,6 +11,40 @@ from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+
+@dataclass
+class ValidationCheckpoint:
+    """Keep an in-memory copy of the model with the best validation score."""
+
+    epoch: int = 0
+    score: tuple[float, ...] | None = None
+    state_dict: dict[str, torch.Tensor] = field(default_factory=dict)
+
+    def consider(
+        self,
+        model: nn.Module,
+        *,
+        epoch: int,
+        score: float | tuple[float, ...],
+    ) -> bool:
+        normalized_score = score if isinstance(score, tuple) else (score,)
+        if self.score is not None and normalized_score <= self.score:
+            return False
+        self.epoch = epoch
+        self.score = normalized_score
+        self.state_dict = {
+            name: parameter.detach().cpu().clone()
+            for name, parameter in model.state_dict().items()
+        }
+        return True
+
+    def restore(self, model: nn.Module) -> None:
+        if not self.state_dict:
+            raise RuntimeError(
+                "Training did not produce a validation checkpoint."
+            )
+        model.load_state_dict(self.state_dict)
 
 
 def set_seed(seed: int) -> None:

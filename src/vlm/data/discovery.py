@@ -11,6 +11,7 @@ VIDEO_NAME_PATTERN = re.compile(
     r".*A(?P<class_id>\d{3})_rgb\.(?:avi|mp4)$",
     re.IGNORECASE,
 )
+PARTICIPANT_PATTERN = re.compile(r"P(?P<participant_id>\d{3})", re.IGNORECASE)
 VIDEO_FILE_PATTERNS = ("*.avi", "*.mp4")
 
 
@@ -19,6 +20,16 @@ def parse_class_id(video_path: Path) -> int:
     if match is None:
         raise ValueError(f"Unsupported video filename: {video_path}")
     return int(match.group("class_id"))
+
+
+def parse_participant_id(video_path: Path) -> int:
+    """Return the NTU participant ID encoded as ``P###`` in a filename."""
+    match = PARTICIPANT_PATTERN.search(video_path.name)
+    if match is None:
+        raise ValueError(
+            f"Video filename has no NTU participant ID (P###): {video_path}"
+        )
+    return int(match.group("participant_id"))
 
 
 def iter_video_paths(videos_dir: Path) -> list[Path]:

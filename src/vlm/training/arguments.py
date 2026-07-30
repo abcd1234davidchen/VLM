@@ -53,4 +53,24 @@ def add_multiclass_arguments(
             "the video directory."
         ),
     )
-    parser.add_argument("--videos-per-split", type=int, default=10)
+    limits = parser.add_mutually_exclusive_group()
+    limits.add_argument(
+        "--max-videos-per-class",
+        type=int,
+        default=None,
+        help=(
+            "Optional total video cap per class across train/validation/test. "
+            "By default all discovered videos are used."
+        ),
+    )
+    limits.add_argument(
+        "--videos-per-split",
+        type=int,
+        default=None,
+        help=(
+            "Deprecated compatibility option: use a total per-class budget "
+            "of 6x this value. Prefer --max-videos-per-class."
+        ),
+    )
+    parser.add_argument("--test-fraction", type=float, default=1 / 6)
+    parser.add_argument("--val-fraction", type=float, default=1 / 6)

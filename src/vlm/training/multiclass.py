@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 from collections.abc import Sequence
 
 import torch
@@ -12,7 +11,12 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from vlm.config import TrainingConfig
-from vlm.data import build_split, save_split_manifest, scan_all_classes
+from vlm.data import (
+    build_split,
+    save_split_manifest,
+    scan_all_classes,
+    summarize_split_samples,
+)
 from vlm.embeddings import (
     CachedEmbeddingDataset,
     extract_or_load_embeddings,
@@ -26,7 +30,12 @@ from vlm.reporting import (
 )
 
 from .arguments import add_multiclass_arguments
-from .engine import resolve_device, set_seed, train_epoch
+from .engine import (
+    ValidationCheckpoint,
+    resolve_device,
+    set_seed,
+    train_epoch,
+)
 
 
 def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
@@ -50,12 +59,25 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         )
     device = resolve_device(config.device)
 
+    if args.videos_per_split is not None:
+        print(
+            "Warning: --videos-per-split is deprecated; prefer "
+            "--max-videos-per-class."
+        )
     split = build_split(
         videos_dir=config.videos_dir,
         class_ids=class_ids,
         videos_per_split=args.videos_per_split,
         seed=config.seed,
+        max_videos_per_class=args.max_videos_per_class,
+        val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
     )
+    split_summary = {
+        name: summarize_split_samples(samples)
+        for name, samples in split.items()
+    }
+    print(json.dumps({"split_summary": split_summary}, indent=2))
     save_split_manifest(
         split,
         config.artifacts_dir / "selected_split.json",
@@ -78,15 +100,18 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         summary = {
             "device": str(device),
             "train_samples": len(cached["train"]),
+            "val_samples": len(cached["val"]),
             "test_samples": len(cached["test"]),
             "frame_stride": config.frame_stride,
             "max_seq_len": config.max_seq_len,
             "cache_dir": str(config.cache_dir),
+            "split_summary": split_summary,
         }
         print(json.dumps(summary, indent=2))
         return summary
 
     train_dataset = CachedEmbeddingDataset(cached["train"])
+    val_dataset = CachedEmbeddingDataset(cached["val"])
     test_dataset = CachedEmbeddingDataset(cached["test"])
     train_loader = DataLoader(
         train_dataset,
@@ -95,6 +120,11 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     )
     train_eval_loader = DataLoader(
         train_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+    )
+    val_loader = DataLoader(
+        val_dataset,
         batch_size=config.batch_size,
         shuffle=False,
     )
@@ -125,6 +155,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     )
 
     history: list[dict[str, float]] = []
+    best_checkpoint = ValidationCheckpoint()
     for epoch in range(1, config.epochs + 1):
         loss = train_epoch(
             model,
@@ -141,33 +172,42 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             device,
             class_ids,
         )
-        started_at = time.time()
-        test_accuracy, _ = evaluate(
+        val_accuracy, _ = evaluate(
             model,
-            test_loader,
-            cached["test"],
+            val_loader,
+            cached["val"],
             device,
             class_ids,
         )
-        test_time = time.time() - started_at
         scheduler.step()
+        best_checkpoint.consider(
+            model,
+            epoch=epoch,
+            score=val_accuracy,
+        )
         history.append(
             {
                 "epoch": float(epoch),
                 "train_loss": loss,
                 "train_accuracy": train_accuracy,
-                "test_accuracy": test_accuracy,
-                "test_time": test_time,
+                "val_accuracy": val_accuracy,
             }
         )
         print(
             f"epoch={epoch:02d} "
             f"train_loss={loss:.4f} "
             f"train_accuracy={train_accuracy:.4f} "
-            f"test_accuracy={test_accuracy:.4f} "
-            f"test_time={test_time:.4f}s"
+            f"val_accuracy={val_accuracy:.4f}"
         )
 
+    best_checkpoint.restore(model)
+    validation_accuracy, _ = evaluate(
+        model,
+        val_loader,
+        cached["val"],
+        device,
+        class_ids,
+    )
     final_accuracy, predictions = evaluate(
         model,
         test_loader,
@@ -185,11 +225,16 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             "class_ids": class_ids,
             "config": vars(args),
             "input_dim": input_dim,
+            "best_epoch": best_checkpoint.epoch,
+            "validation_accuracy": validation_accuracy,
         },
     )
     results = {
         "device": str(device),
+        "split_summary": split_summary,
         "history": history,
+        "best_epoch": best_checkpoint.epoch,
+        "validation_accuracy": validation_accuracy,
         "final_test_accuracy": final_accuracy,
         "checkpoint_path": str(checkpoint_path),
         "predictions": predictions,
@@ -199,13 +244,15 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         history,
         graph_path,
         train_key="train_accuracy",
-        evaluation_key="test_accuracy",
-        evaluation_label="Test Accuracy",
-        title="Training and Testing Accuracy",
+        evaluation_key="val_accuracy",
+        evaluation_label="Validation Accuracy",
+        title="Training and Validation Accuracy",
     )
     print(f"Saved checkpoint to {checkpoint_path}")
     print(f"Saved evaluation results to {results_path}")
     print(f"Saved accuracy graph to {graph_path}")
+    print(f"Best validation epoch: {best_checkpoint.epoch}")
+    print(f"Validation accuracy: {validation_accuracy:.4f}")
     print(f"Final test accuracy: {final_accuracy:.4f}")
     return results
 
@@ -213,7 +260,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Train a prototype video classifier from CLIP frame embeddings."
+            "Train a multiclass video classifier from CLIP frame embeddings."
         )
     )
     add_multiclass_arguments(parser, artifacts_dir="artifacts")

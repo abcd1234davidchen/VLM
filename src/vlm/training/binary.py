@@ -16,9 +16,13 @@ from torch.utils.data import DataLoader
 from vlm.config import TrainingConfig
 from vlm.data import (
     VideoSample,
+    assign_participants_to_splits,
     iter_video_paths,
     parse_class_id,
+    parse_participant_id,
     save_split_manifest,
+    split_counts_for_total,
+    validate_split_fractions,
 )
 from vlm.embeddings import (
     CachedEmbeddingDataset,
@@ -40,7 +44,12 @@ from vlm.reporting import (
 )
 
 from .arguments import add_common_training_arguments
-from .engine import resolve_device, set_seed, train_epoch
+from .engine import (
+    ValidationCheckpoint,
+    resolve_device,
+    set_seed,
+    train_epoch,
+)
 
 
 DANGER_CLASS_IDS = frozenset({42, 43, 48})
@@ -74,14 +83,10 @@ def build_binary_split(
     seed: int,
     max_videos_per_category: int | None,
 ) -> dict[str, list[VideoSample]]:
-    if not 0.0 < test_fraction < 1.0:
-        raise ValueError("--test-fraction must be between 0 and 1.")
-    if not 0.0 < val_fraction < 1.0:
-        raise ValueError("--val-fraction must be between 0 and 1.")
-    if test_fraction + val_fraction >= 1.0:
-        raise ValueError(
-            "--test-fraction plus --val-fraction must be less than 1."
-        )
+    validate_split_fractions(
+        val_fraction=val_fraction,
+        test_fraction=test_fraction,
+    )
 
     grouped = discover_binary_videos(videos_dir)
     if not grouped[0] or not grouped[1]:
@@ -93,48 +98,79 @@ def build_binary_split(
             f"Need at least one safe and one danger video; found {counts}."
         )
 
-    rng = random.Random(seed)
+    participant_split = assign_participants_to_splits(
+        (
+            parse_participant_id(path)
+            for paths in grouped.values()
+            for path in paths
+        ),
+        val_fraction=val_fraction,
+        test_fraction=test_fraction,
+        seed=seed,
+    )
+    participant_to_split = {
+        participant_id: split_name
+        for split_name, participant_ids in participant_split.items()
+        for participant_id in participant_ids
+    }
     split: dict[str, list[VideoSample]] = {
         "train": [],
         "val": [],
         "test": [],
     }
     for class_index, paths in grouped.items():
-        candidates = list(paths)
-        rng.shuffle(candidates)
-        if max_videos_per_category is not None:
-            candidates = candidates[:max_videos_per_category]
-        if len(candidates) < 3:
-            raise ValueError(
-                f"{binary_class_name(class_index)} has only "
-                f"{len(candidates)} videos after selection; need at least "
-                "3 for a train/val/test split."
-            )
+        candidates_by_split: dict[str, list[Path]] = {
+            "train": [],
+            "val": [],
+            "test": [],
+        }
+        for path in paths:
+            candidates_by_split[
+                participant_to_split[parse_participant_id(path)]
+            ].append(path)
 
-        test_count = max(1, round(len(candidates) * test_fraction))
-        test_count = min(test_count, len(candidates) - 2)
-        val_count = max(1, round(len(candidates) * val_fraction))
-        val_count = min(
-            val_count,
-            len(candidates) - test_count - 1,
+        selected_counts = (
+            split_counts_for_total(
+                max_videos_per_category,
+                val_fraction=val_fraction,
+                test_fraction=test_fraction,
+            )
+            if max_videos_per_category is not None
+            else {
+                name: len(candidates)
+                for name, candidates in candidates_by_split.items()
+            }
         )
-        test_paths = sorted(
-            candidates[:test_count],
-            key=lambda path: path.name,
-        )
-        val_paths = sorted(
-            candidates[test_count : test_count + val_count],
-            key=lambda path: path.name,
-        )
-        train_paths = sorted(
-            candidates[test_count + val_count :],
-            key=lambda path: path.name,
-        )
-        for split_name, split_paths in (
-            ("train", train_paths),
-            ("val", val_paths),
-            ("test", test_paths),
-        ):
+        empty_splits = [
+            split_name
+            for split_name, candidates in candidates_by_split.items()
+            if not candidates
+        ]
+        if empty_splits:
+            raise ValueError(
+                f"{binary_class_name(class_index)} has no videos in "
+                f"participant-disjoint split(s): {', '.join(empty_splits)}. "
+                "Provide more participants with both label categories or "
+                "choose a different seed."
+            )
+        if max_videos_per_category is not None:
+            for split_name, target_count in selected_counts.items():
+                available = len(candidates_by_split[split_name])
+                if available < target_count:
+                    raise ValueError(
+                        f"{binary_class_name(class_index)} has only "
+                        f"{available} {split_name} videos after "
+                        "participant-disjoint splitting; need "
+                        f"{target_count}. Increase the participant pool or "
+                        "lower --max-videos-per-category."
+                    )
+        for split_name, candidates in candidates_by_split.items():
+            rng = random.Random(f"{seed}:{class_index}:{split_name}")
+            rng.shuffle(candidates)
+            split_paths = sorted(
+                candidates[: selected_counts[split_name]],
+                key=lambda path: path.name,
+            )
             split[split_name].extend(
                 VideoSample(
                     video_path=video_path,
@@ -366,9 +402,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         )
 
     history: list[dict[str, float]] = []
-    best_epoch = 0
-    best_score: tuple[float, ...] | None = None
-    best_state_dict: dict[str, torch.Tensor] | None = None
+    best_checkpoint = ValidationCheckpoint()
     best_validation_metrics: dict[str, object] | None = None
     for epoch in range(1, config.epochs + 1):
         loss = train_epoch(
@@ -394,13 +428,11 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         scheduler.step()
 
         score = validation_selection_score(val_metrics)
-        if best_score is None or score > best_score:
-            best_epoch = epoch
-            best_score = score
-            best_state_dict = {
-                name: parameter.detach().cpu().clone()
-                for name, parameter in model.state_dict().items()
-            }
+        if best_checkpoint.consider(
+            model,
+            epoch=epoch,
+            score=score,
+        ):
             best_validation_metrics = val_metrics
 
         epoch_record = {
@@ -437,11 +469,11 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             f"{epoch_record['val_danger_recall']:.4f}"
         )
 
-    if best_state_dict is None or best_validation_metrics is None:
+    if best_validation_metrics is None:
         raise RuntimeError(
             "Training did not produce a validation checkpoint."
         )
-    model.load_state_dict(best_state_dict)
+    best_checkpoint.restore(model)
     validation_metrics, _ = evaluate_binary(
         model,
         val_loader,
@@ -470,7 +502,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             "danger_class_ids": sorted(DANGER_CLASS_IDS),
             "config": vars(args),
             "input_dim": input_dim,
-            "best_epoch": best_epoch,
+            "best_epoch": best_checkpoint.epoch,
             "danger_threshold": 0.5,
             "validation_metrics": validation_metrics,
         },
@@ -483,7 +515,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         "effective_split_summary": effective_split_summary,
         "augmentation_summary": augmentation_summary,
         "history": history,
-        "best_epoch": best_epoch,
+        "best_epoch": best_checkpoint.epoch,
         "best_validation_metrics": best_validation_metrics,
         "danger_threshold": 0.5,
         "validation_metrics": validation_metrics,
@@ -504,7 +536,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     print(f"Saved checkpoint to {checkpoint_path}")
     print(f"Saved evaluation results to {results_path}")
     print(f"Saved accuracy graph to {graph_path}")
-    print(f"Best validation epoch: {best_epoch}")
+    print(f"Best validation epoch: {best_checkpoint.epoch}")
     print("Danger threshold: 0.500000")
     print("Validation metrics:")
     print(json.dumps(validation_metrics, indent=2))

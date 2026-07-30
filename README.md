@@ -56,17 +56,28 @@ models and evaluation rules.
 
 | Command | Model | Current split | Evaluation behavior |
 |---|---|---|---|
-| `vlm train multiclass` | `GRUVideoClassifier` | Per class: deterministic 5:1 train/test; default `50` train and `10` test videos | Reports train and test accuracy each epoch |
-| `vlm train prototype` | `PrototypeVideoClassifier` | Same deterministic 5:1 train/test split | Reports train and test accuracy each epoch |
-| `vlm train binary` | Safe/danger `GRUVideoClassifier` | Per binary label: approximately 2/3 train, 1/6 validation, 1/6 test | Uses validation macro F1, balanced accuracy, and accuracy to select the best checkpoint, then evaluates test |
+| `vlm train multiclass` | `GRUVideoClassifier` | All discovered videos, split into participant-disjoint train/validation/test | Selects the best checkpoint by validation accuracy, then evaluates test once |
+| `vlm train prototype` | `PrototypeVideoClassifier` | Same all-video, participant-disjoint train/validation/test split | Selects the best checkpoint by validation accuracy, then evaluates test once |
+| `vlm train binary` | Safe/danger `GRUVideoClassifier` | Participant-disjoint; approximately 2/3 train, 1/6 validation, 1/6 test | Uses validation macro F1, balanced accuracy, and accuracy to select the best checkpoint, then evaluates test once |
 
 In `PrototypeVideoClassifier`, “prototype” refers to learnable normalized class
 prototypes used to score a GRU-encoded video. It is distinct from the older use
 of “prototype” to mean the project's initial proof of concept.
 
-Multiclass and prototype currently have no validation split and inspect test
-accuracy each epoch. Adding validation and reserving test for one final
-evaluation is tracked in the roadmap below.
+The NTU participant identifier (`P###`) is assigned to exactly one split, so
+different actions, repetitions, and camera views from the same participant
+cannot leak across train, validation, and test. The split manifest records the
+seed, strategy, selected videos, and participant IDs for each split.
+
+Multiclass and prototype use all discovered videos by default. Set
+`--max-videos-per-class N` to cap the total number per class for a faster
+experiment. The older `--videos-per-split N` option remains as a deprecated
+compatibility alias for a `6N` total per-class budget. Use `--val-fraction`
+and `--test-fraction` to change the participant allocation ratios.
+
+At startup, both commands print the total video count, participant count, and
+per-class count for each split. The same summary is stored in the evaluation
+results JSON.
 
 ### Frame Sampling and Embedding Cache
 
@@ -133,12 +144,13 @@ legacy command equivalents, and default output locations.
 
 ### Dataset Splits and Evaluation
 
-- [ ] Add validation splits to the multiclass and prototype pipelines.
-- [ ] Select their best checkpoints using validation metrics and evaluate test
+- [x] Split train, validation, and test by participant.
+- [x] Add validation splits to the multiclass and prototype pipelines.
+- [x] Select their best checkpoints using validation metrics and evaluate test
       only once.
 - [ ] Decide whether all training pipelines should share early stopping.
-- [ ] Keep split generation deterministic and record selected videos and seeds
-      in split manifests.
+- [x] Keep split generation deterministic and record selected videos, seeds,
+      strategy, and participants in split manifests.
 
 ### Video and Frame Sampling
 
