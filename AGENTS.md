@@ -1,0 +1,35 @@
+# Project-specific agent instructions
+
+These rules record explicit behavior corrections made by the user while working on this repository.
+
+## Conversation continuity
+
+- Treat brief clarification questions during active work as side questions by default. Answer them, then continue the authorized task without waiting for another prompt.
+- Do not stop an implementation merely because the user asks what is being changed. Stop only when the user explicitly pauses, replaces, or cancels the task, or when a real decision or permission is required.
+
+## Language preference
+
+- The user often writes requests in English, but prefers responses in natural Traditional Chinese (`繁體中文`) by default.
+- Keep code, identifiers, commands, filenames, and technical terms in English when translating them would reduce precision.
+
+## Git branches
+
+- Do not use the `codex/` prefix for branches in this repository.
+- Use a short, descriptive branch name such as `benchmark-foundation`.
+
+## Graphify freshness
+
+- If graphify output is stale, still points at retired or legacy paths, or starts obstructing accurate analysis, update the graph before relying on it.
+- Treat current source files as authoritative while an update is pending.
+
+## Testing restraint
+
+- Do not add persistent tests reflexively for every change.
+- Add a test only when it protects an important behavior or contract, covers a meaningful regression risk, or the user explicitly requests it.
+- Prefer existing checks and avoid tests that merely duplicate current coverage or assert implementation details without practical value.
+
+## Markdown formatting
+
+- Write each Markdown paragraph and each individual list item on one physical line.
+- Do not insert manual line breaks in the middle of a sentence; let the editor or IDE handle visual wrapping.
+- Code blocks and Markdown structures that inherently require multiple lines, such as tables, are exempt.
