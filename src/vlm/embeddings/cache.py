@@ -19,7 +19,7 @@ from .extractor import embed_video
 
 def cache_config_key(
     model_name: str,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
 ) -> str:
     safe_model_name = "".join(
@@ -28,21 +28,27 @@ def cache_config_key(
         else "_"
         for character in model_name
     )
-    return f"{safe_model_name}__stride_{frame_stride}__len_{max_seq_len}"
+    formatted_fps = f"{sample_fps:g}".replace(".", "_")
+    return (
+        f"{safe_model_name}__time_fps_{formatted_fps}"
+        f"__max_len_{max_seq_len}__variable"
+    )
 
 
 def build_cache_metadata(
     sample: VideoSample,
     *,
     model_name: str,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
     augmentation: FrameAugmentation | None = None,
 ) -> dict[str, object]:
     return {
         "model_name": model_name,
-        "frame_stride": frame_stride,
+        "frame_sampling_strategy": "time_based_uniform_cap",
+        "sample_fps": sample_fps,
         "max_seq_len": max_seq_len,
+        "sequence_storage": "variable_length",
         "video_path": str(sample.video_path),
         "augmentation": (
             augmentation.to_metadata()
@@ -57,7 +63,7 @@ def get_embedding_cache_path(
     sample: VideoSample,
     *,
     model_name: str,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
     augmentation: FrameAugmentation | None = None,
 ) -> Path:
@@ -70,7 +76,7 @@ def get_embedding_cache_path(
     return (
         cache_dir
         / "embeddings"
-        / cache_config_key(model_name, frame_stride, max_seq_len)
+        / cache_config_key(model_name, sample_fps, max_seq_len)
         / f"{stem}.pt"
     )
 
@@ -80,7 +86,7 @@ def is_cache_compatible(
     sample: VideoSample,
     *,
     model_name: str,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
     augmentation: FrameAugmentation | None = None,
 ) -> bool:
@@ -89,11 +95,11 @@ def is_cache_compatible(
     metadata = payload.get("cache_metadata")
     if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:
         return False
-    if embeddings.shape[0] != max_seq_len:
-        return False
     if not isinstance(valid_length, int):
         return False
     if valid_length < 1 or valid_length > max_seq_len:
+        return False
+    if embeddings.shape[0] != valid_length:
         return False
     if not isinstance(metadata, dict):
         return False
@@ -101,7 +107,7 @@ def is_cache_compatible(
     expected_metadata = build_cache_metadata(
         sample,
         model_name=model_name,
-        frame_stride=frame_stride,
+        sample_fps=sample_fps,
         max_seq_len=max_seq_len,
         augmentation=augmentation,
     )
@@ -118,7 +124,7 @@ def write_cache_manifest(
     cached: dict[str, list[CachedSample]],
     *,
     model_name: str,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
 ) -> None:
     records: list[dict[str, object]] = []
@@ -140,11 +146,13 @@ def write_cache_manifest(
     payload = {
         "cache_properties": {
             "model_name": model_name,
-            "frame_stride": frame_stride,
+            "frame_sampling_strategy": "time_based_uniform_cap",
+            "sample_fps": sample_fps,
             "max_seq_len": max_seq_len,
+            "sequence_storage": "variable_length",
             "config_key": cache_config_key(
                 model_name,
-                frame_stride,
+                sample_fps,
                 max_seq_len,
             ),
         },
@@ -184,7 +192,7 @@ def extract_or_load_embeddings(
     *,
     cache_dir: Path,
     model_name: str,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
     device: torch.device,
     batch_size: int,
@@ -246,7 +254,7 @@ def extract_or_load_embeddings(
                         cache_dir,
                         sample,
                         model_name=model_name,
-                        frame_stride=frame_stride,
+                        sample_fps=sample_fps,
                         max_seq_len=max_seq_len,
                         augmentation=augmentation,
                     )
@@ -262,7 +270,7 @@ def extract_or_load_embeddings(
                             cache_payload,
                             sample,
                             model_name=model_name,
-                            frame_stride=frame_stride,
+                            sample_fps=sample_fps,
                             max_seq_len=max_seq_len,
                             augmentation=augmentation,
                         )
@@ -281,7 +289,7 @@ def extract_or_load_embeddings(
                             processor=processor,
                             model=model,
                             device=device,
-                            frame_stride=frame_stride,
+                            sample_fps=sample_fps,
                             max_seq_len=max_seq_len,
                             batch_size=batch_size,
                             augmentation=augmentation,
@@ -292,7 +300,7 @@ def extract_or_load_embeddings(
                             "cache_metadata": build_cache_metadata(
                                 sample,
                                 model_name=model_name,
-                                frame_stride=frame_stride,
+                                sample_fps=sample_fps,
                                 max_seq_len=max_seq_len,
                                 augmentation=augmentation,
                             ),
@@ -326,7 +334,7 @@ def extract_or_load_embeddings(
         cache_dir,
         cached,
         model_name=model_name,
-        frame_stride=frame_stride,
+        sample_fps=sample_fps,
         max_seq_len=max_seq_len,
     )
     if refreshed_cache_files:

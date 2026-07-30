@@ -28,6 +28,7 @@ from vlm.data import (
 )
 from vlm.embeddings import (
     CachedEmbeddingDataset,
+    collate_cached_embeddings,
     extract_or_load_embeddings,
 )
 from vlm.evaluation.binary import (
@@ -321,7 +322,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         split,
         config.artifacts_dir / "selected_split.json",
         seed=int(source_metadata.get("seed", config.seed)),
-        frame_stride=config.frame_stride,
+        sample_fps=config.sample_fps,
         max_seq_len=config.max_seq_len,
         split_strategy=str(
             source_metadata.get(
@@ -345,7 +346,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         split,
         cache_dir=config.cache_dir,
         model_name=config.model_name,
-        frame_stride=config.frame_stride,
+        sample_fps=config.sample_fps,
         max_seq_len=config.max_seq_len,
         device=device,
         batch_size=config.clip_batch_size,
@@ -363,7 +364,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             "train_samples": len(cached["train"]),
             "val_samples": len(cached["val"]),
             "test_samples": len(cached["test"]),
-            "frame_stride": config.frame_stride,
+            "sample_fps": config.sample_fps,
             "max_seq_len": config.max_seq_len,
             "cache_dir": str(config.cache_dir),
             "split_summary": split_summary,
@@ -380,21 +381,25 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         train_dataset,
         batch_size=config.batch_size,
         shuffle=True,
+        collate_fn=collate_cached_embeddings,
     )
     train_eval_loader = DataLoader(
         train_dataset,
         batch_size=config.batch_size,
         shuffle=False,
+        collate_fn=collate_cached_embeddings,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=config.batch_size,
         shuffle=False,
+        collate_fn=collate_cached_embeddings,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=config.batch_size,
         shuffle=False,
+        collate_fn=collate_cached_embeddings,
     )
 
     input_dim = train_dataset[0][0].shape[-1]

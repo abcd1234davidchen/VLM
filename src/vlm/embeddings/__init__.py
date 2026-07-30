@@ -13,7 +13,11 @@ from .cache import (
     is_cache_compatible,
     write_cache_manifest,
 )
-from .dataset import CachedEmbeddingDataset, CachedSample
+from .dataset import (
+    CachedEmbeddingDataset,
+    CachedSample,
+    collate_cached_embeddings,
+)
 from .extractor import embed_video
 
 __all__ = [
@@ -23,6 +27,7 @@ __all__ = [
     "apply_frame_augmentation",
     "build_cache_metadata",
     "cache_config_key",
+    "collate_cached_embeddings",
     "embed_video",
     "extract_or_load_embeddings",
     "get_embedding_cache_path",

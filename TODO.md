@@ -67,14 +67,13 @@
 
 ## 影片與影格取樣
 
-- [ ] 決定 CLIP／XCLIP experiments 應代表隨機連續片段，還是涵蓋整部影片。
-- [ ] 如果目標是涵蓋整部影片，將 experiments 的隨機連續 window 改為從
-      完整影片長度均勻取幀。
+- [x] 三條 CLIP＋BiGRU 訓練管線改用 time-based 6 FPS，最多保留 32 個真實 frames；超過上限時從完整影片均勻縮減。
+- [x] Embedding cache 只儲存真實長度，DataLoader 組 batch 時才動態補到該 batch 的最長序列。
+- [x] XCLIP 與 XCLIPVision experiments 從完整影片 deterministic uniform 取 pretrained checkpoint 原生的 8 幀。
+- [ ] 決定 standalone per-frame CLIP experiment 應保留隨機連續片段，還是改為涵蓋整部影片。
 - [ ] 評估是否要為長影片取多個 temporal windows，並聚合它們的預測。
-- [ ] 將 experiment sampling strategy 與 frame sample rate 暴露為 CLI
-      選項。
-- [ ] 在文件中說明目前 training 每五幀取一幀，之後再將過長的 embedding
-      sequence 均勻縮減為 32 個 time steps。
+- [ ] 將 experiment sampling strategy 與 frame sample rate 暴露為 CLI 選項。
+- [x] 在文件中說明 training 與 XCLIP experiments 各自的取幀策略。
 
 ## XCLIP 影片分類器
 

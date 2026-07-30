@@ -10,18 +10,33 @@ def read_video_pyav(
     container: av.container.InputContainer,
     indices: np.ndarray,
 ) -> np.ndarray:
-    frames = []
+    if indices.size == 0:
+        raise ValueError("At least one frame index is required.")
+    decoded_frames: dict[int, np.ndarray] = {}
     container.seek(0)
-    start_index = indices[0]
-    end_index = indices[-1]
+    requested_indices = {int(index) for index in indices}
+    end_index = max(requested_indices)
     for index, frame in enumerate(container.decode(video=0)):
         if index > end_index:
             break
-        if index >= start_index and index in indices:
-            frames.append(frame)
-    return np.stack(
-        [frame.to_ndarray(format="rgb24") for frame in frames]
-    )
+        if index in requested_indices:
+            decoded_frames[index] = frame.to_ndarray(format="rgb24")
+    missing = requested_indices - decoded_frames.keys()
+    if missing:
+        raise ValueError(f"Could not decode requested frame indices: {missing}")
+    return np.stack([decoded_frames[int(index)] for index in indices])
+
+
+def uniform_frame_indices(
+    clip_len: int,
+    seg_len: int,
+) -> np.ndarray:
+    """Sample a deterministic fixed-size view across the complete video."""
+    if clip_len < 1:
+        raise ValueError("clip_len must be at least 1.")
+    if seg_len < 1:
+        raise ValueError("seg_len must be at least 1.")
+    return np.linspace(0, seg_len - 1, num=clip_len).round().astype(np.int64)
 
 
 def sample_frame_indices(

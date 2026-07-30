@@ -130,12 +130,17 @@ class ParticipantDisjointSplitTest(unittest.TestCase):
                 split,
                 manifest_path,
                 seed=5,
-                frame_stride=5,
+                sample_fps=6.0,
                 max_seq_len=32,
             )
 
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["seed"], 5)
+            self.assertEqual(payload["sample_fps"], 6.0)
+            self.assertEqual(
+                payload["frame_sampling_strategy"],
+                "time_based_uniform_cap",
+            )
             self.assertEqual(
                 payload["split_strategy"],
                 "participant_disjoint",

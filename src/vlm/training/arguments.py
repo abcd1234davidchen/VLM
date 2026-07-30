@@ -25,7 +25,12 @@ def add_common_training_arguments(
         "--model-name",
         default="openai/clip-vit-base-patch32",
     )
-    parser.add_argument("--frame-stride", type=int, default=5)
+    parser.add_argument(
+        "--sample-fps",
+        type=float,
+        default=6.0,
+        help="Sample training videos on a fixed real-time FPS grid.",
+    )
     parser.add_argument("--max-seq-len", type=int, default=32)
     parser.add_argument("--clip-batch-size", type=int, default=16)
     parser.add_argument("--batch-size", type=int, default=16)

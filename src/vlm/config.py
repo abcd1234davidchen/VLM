@@ -13,7 +13,7 @@ class TrainingConfig:
     cache_dir: Path
     artifacts_dir: Path
     model_name: str
-    frame_stride: int
+    sample_fps: float
     max_seq_len: int
     clip_batch_size: int
     batch_size: int
@@ -39,7 +39,7 @@ class TrainingConfig:
             cache_dir=Path(args.cache_dir),
             artifacts_dir=Path(args.artifacts_dir),
             model_name=args.model_name,
-            frame_stride=args.frame_stride,
+            sample_fps=args.sample_fps,
             max_seq_len=args.max_seq_len,
             clip_batch_size=args.clip_batch_size,
             batch_size=args.batch_size,

@@ -15,6 +15,8 @@ from .discovery import discover_videos, parse_participant_id
 SPLIT_METADATA_KEYS = {
     "seed",
     "frame_stride",
+    "sample_fps",
+    "frame_sampling_strategy",
     "max_seq_len",
     "split_strategy",
     "participants",
@@ -292,7 +294,7 @@ def save_split_manifest(
     manifest_path: Path,
     *,
     seed: int,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
     split_strategy: str = "participant_disjoint",
     source_manifest: Path | None = None,
@@ -300,7 +302,8 @@ def save_split_manifest(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "seed": seed,
-        "frame_stride": frame_stride,
+        "frame_sampling_strategy": "time_based_uniform_cap",
+        "sample_fps": sample_fps,
         "max_seq_len": max_seq_len,
         "split_strategy": split_strategy,
         "source_manifest": (

@@ -44,6 +44,16 @@ class TrainingArgumentTest(unittest.TestCase):
                 "artifacts/shared_split.json",
             )
 
+    def test_every_pipeline_defaults_to_six_fps_and_32_frames(self) -> None:
+        for parser in (
+            build_multiclass_parser(),
+            build_prototype_parser(),
+            build_binary_parser(),
+        ):
+            arguments = parser.parse_args([])
+            self.assertEqual(arguments.sample_fps, 6.0)
+            self.assertEqual(arguments.max_seq_len, 32)
+
 
 if __name__ == "__main__":
     unittest.main()

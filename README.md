@@ -81,26 +81,20 @@ results JSON.
 
 ### Frame Sampling and Embedding Cache
 
-Training defaults to `--frame-stride 5` and `--max-seq-len 32`:
+Training defaults to `--sample-fps 6` and `--max-seq-len 32`:
 
-1. decode the full video and keep frames `0, 5, 10, 15, ...`;
-2. encode each retained frame with `openai/clip-vit-base-patch32`;
-3. L2-normalize each frame embedding;
-4. if more than 32 embeddings remain, select 32 evenly across the sequence;
-5. if fewer than 32 remain, zero-pad and retain the true sequence length.
+1. read the source frame rate and select frames on a deterministic six-frames-per-second time grid;
+2. if more than 32 frames are selected, retain 32 evenly across the complete video;
+3. encode the selected frames with `openai/clip-vit-base-patch32` and L2-normalize each embedding;
+4. store only the real embedding sequence in cache, without fixed-length zero padding;
+5. when a batch is assembled, pad only to that batch's longest sequence and retain each video's true length for packed GRU processing and masked pooling.
 
-Compatible embedding tensors are reused when the video, model, frame stride,
-sequence length, and augmentation identity match. Binary training additionally
-creates deterministic augmented cache entries for the minority training class
-using horizontal flip, small rotation, color jitter, and random crop by
-default. Validation and test videos are not augmented.
+Compatible embedding tensors are reused when the video, model, sampling strategy, sample FPS, maximum sequence length, storage format, and augmentation identity match. Binary training additionally creates deterministic augmented cache entries for the minority training class using horizontal flip, small rotation, color jitter, and random crop by default. Validation and test videos are not augmented.
 
 Cache filenames include a hash of the source video path, so videos with the
 same filename in different directories cannot collide.
 
-The standalone CLIP/XCLIP experiments use a separate strategy: they choose a
-seeded random contiguous clip and currently read 8 frames for CLIP/XCLIP or 32
-frames for XCLIP vision. This experiment sampling does not affect training.
+The standalone XCLIP and XCLIP-vision experiments deterministically select 8 frames uniformly across the complete video, matching the pretrained checkpoint's native frame count. The standalone per-frame CLIP experiment still uses its separate seeded random contiguous-clip strategy. Experiment sampling does not affect the three training pipelines.
 
 ## Models and Experiments Maintained
 
@@ -174,10 +168,8 @@ legacy command equivalents, and default output locations.
 
 ### Video and Frame Sampling
 
-- [ ] Decide whether experiments should represent a random contiguous clip or
-      the entire video.
-- [ ] If whole-video coverage is intended, sample uniformly across the full
-      duration.
+- [x] Use deterministic whole-video uniform 8-frame sampling for XCLIP experiments.
+- [ ] Decide whether the standalone per-frame CLIP experiment should retain a random contiguous clip or cover the entire video.
 - [ ] Consider aggregating multiple temporal windows for long videos.
 - [ ] Expose experiment sampling strategy and frame sample rate as CLI options.
 

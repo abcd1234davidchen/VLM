@@ -23,7 +23,11 @@ from .splitting import (
     validate_loaded_split,
     validate_split_fractions,
 )
-from .video_io import resize_embedding_sequence, sample_video_frames
+from .video_io import (
+    cap_embedding_sequence,
+    sample_video_frames,
+    time_based_frame_indices,
+)
 
 __all__ = [
     "VIDEO_FILE_PATTERNS",
@@ -38,13 +42,14 @@ __all__ = [
     "load_split_manifest_metadata",
     "parse_class_id",
     "parse_participant_id",
-    "resize_embedding_sequence",
+    "cap_embedding_sequence",
     "sample_video_frames",
     "save_split_manifest",
     "select_split_classes",
     "scan_all_classes",
     "split_counts_for_total",
     "summarize_split_samples",
+    "time_based_frame_indices",
     "validate_loaded_split",
     "validate_split_fractions",
 ]

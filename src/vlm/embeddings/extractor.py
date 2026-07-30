@@ -7,7 +7,7 @@ from transformers import CLIPModel, CLIPProcessor
 
 from vlm.data import (
     VideoSample,
-    resize_embedding_sequence,
+    cap_embedding_sequence,
     sample_video_frames,
 )
 
@@ -20,12 +20,16 @@ def embed_video(
     processor: CLIPProcessor,
     model: CLIPModel,
     device: torch.device,
-    frame_stride: int,
+    sample_fps: float,
     max_seq_len: int,
     batch_size: int,
     augmentation: FrameAugmentation | None = None,
 ) -> tuple[torch.Tensor, int]:
-    frames = sample_video_frames(sample.video_path, frame_stride)
+    frames = sample_video_frames(
+        sample.video_path,
+        target_fps=sample_fps,
+        max_frames=max_seq_len,
+    )
     if augmentation is not None:
         frames = apply_frame_augmentation(frames, augmentation)
 
@@ -47,4 +51,4 @@ def embed_video(
         )
 
     stacked = torch.cat(features, dim=0)
-    return resize_embedding_sequence(stacked, max_seq_len)
+    return cap_embedding_sequence(stacked, max_seq_len)

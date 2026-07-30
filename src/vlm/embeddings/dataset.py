@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
 
@@ -56,3 +57,15 @@ class CachedEmbeddingDataset(Dataset):
             dtype=torch.long,
         )
         return embeddings, valid_length, label
+
+
+def collate_cached_embeddings(
+    batch: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pad only to the longest sequence in the current batch."""
+    embeddings, valid_lengths, labels = zip(*batch)
+    return (
+        pad_sequence(embeddings, batch_first=True),
+        torch.stack(valid_lengths),
+        torch.stack(labels),
+    )
