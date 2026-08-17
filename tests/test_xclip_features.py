@@ -13,6 +13,7 @@ from vlm.models import XCLIPFeatureClassifier
 from vlm.xclip_features import (
     build_xclip_cache_metadata,
     extract_xclip_feature,
+    extract_xclip_feature_batch,
     get_xclip_feature_cache_path,
     is_xclip_cache_compatible,
 )
@@ -153,6 +154,40 @@ class XCLIPFeatureTest(unittest.TestCase):
         self.assertEqual(processor.return_tensors, "pt")
         self.assertEqual(model.pixel_values.shape, (1, 8, 3, 4, 4))
         self.assertEqual(feature.shape, (512,))
+
+    def test_batch_extractor_sends_multiple_videos_in_one_call(self) -> None:
+        class Processor:
+            def __call__(self, *, images, return_tensors):
+                self.images = images
+                return {
+                    "pixel_values": torch.zeros(2, 8, 3, 4, 4)
+                }
+
+        class Model:
+            def get_video_features(self, *, pixel_values):
+                self.pixel_values = pixel_values
+                return SimpleNamespace(
+                    pooler_output=torch.ones(2, 512)
+                )
+
+        processor = Processor()
+        model = Model()
+        frames = np.zeros((8, 4, 4, 3), dtype=np.uint8)
+
+        features = extract_xclip_feature_batch(
+            [frames, frames],
+            processor=processor,
+            model=model,
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(len(processor.images), 2)
+        self.assertEqual(len(processor.images[0]), 8)
+        self.assertEqual(model.pixel_values.shape, (2, 8, 3, 4, 4))
+        self.assertEqual(
+            [feature.shape for feature in features],
+            [(512,), (512,)],
+        )
 
 
 if __name__ == "__main__":

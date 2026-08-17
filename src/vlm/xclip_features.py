@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +34,12 @@ class CachedXCLIPFeature:
     class_id: int
     class_index: int
     split: str
+
+
+@dataclass(frozen=True)
+class _PendingXCLIPFeature:
+    sample: VideoSample
+    feature_path: Path
 
 
 class CachedXCLIPFeatureDataset(Dataset):
@@ -158,17 +166,42 @@ def extract_xclip_feature(
     num_frames: int,
 ) -> torch.Tensor:
     frames = read_uniform_video_frames(sample.video_path, num_frames)
-    inputs = processor(images=list(frames), return_tensors="pt")
+    return extract_xclip_feature_batch(
+        [frames],
+        processor=processor,
+        model=model,
+        device=device,
+    )[0]
+
+
+def extract_xclip_feature_batch(
+    frames_by_video: Sequence[np.ndarray],
+    *,
+    processor: XCLIPProcessor,
+    model: XCLIPModel,
+    device: torch.device,
+) -> list[torch.Tensor]:
+    """Encode multiple fixed-size video views in one model call."""
+    if not frames_by_video:
+        raise ValueError("At least one video is required for extraction")
+    images: list[np.ndarray] | list[list[np.ndarray]]
+    if len(frames_by_video) == 1:
+        images = list(frames_by_video[0])
+    else:
+        images = [list(frames) for frames in frames_by_video]
+    inputs = processor(images=images, return_tensors="pt")
     pixel_values = inputs["pixel_values"].to(device)
     with torch.inference_mode():
         output = model.get_video_features(pixel_values=pixel_values)
-    feature = output.pooler_output
-    if feature.ndim != 2 or feature.shape[0] != 1:
+    features = output.pooler_output
+    expected_batch_size = len(frames_by_video)
+    if features.ndim != 2 or features.shape[0] != expected_batch_size:
         raise ValueError(
             "XCLIP get_video_features returned an unexpected shape: "
-            f"{tuple(feature.shape)}"
+            f"{tuple(features.shape)}; expected batch size "
+            f"{expected_batch_size}"
         )
-    return feature[0].detach().cpu()
+    return [feature.detach().cpu() for feature in features]
 
 
 def write_xclip_cache_manifest(
@@ -220,12 +253,22 @@ def extract_or_load_xclip_features(
     num_frames: int,
     device: torch.device,
     force_extract: bool,
+    feature_batch_size: int = 1,
+    decode_workers: int = 1,
 ) -> dict[str, list[CachedXCLIPFeature]]:
     """Load compatible frozen features and extract only missing entries."""
+    if feature_batch_size < 1:
+        raise ValueError("feature_batch_size must be at least 1")
+    if decode_workers < 1:
+        raise ValueError("decode_workers must be at least 1")
     cache_dir.mkdir(parents=True, exist_ok=True)
     processor: XCLIPProcessor | None = None
     model: XCLIPModel | None = None
-    cached = {split_name: [] for split_name in split}
+    planned: dict[
+        str,
+        list[CachedXCLIPFeature | _PendingXCLIPFeature],
+    ] = {split_name: [] for split_name in split}
+    pending: list[_PendingXCLIPFeature] = []
     refreshed_cache_files = 0
 
     progress = tqdm(
@@ -256,51 +299,112 @@ def extract_or_load_xclip_features(
                     )
 
                 if should_extract:
-                    if processor is None or model is None:
-                        processor = XCLIPProcessor.from_pretrained(model_name)
-                        model = XCLIPModel.from_pretrained(model_name).to(
-                            device
+                    task = _PendingXCLIPFeature(
+                        sample=sample,
+                        feature_path=cache_path,
+                    )
+                    planned[split_name].append(task)
+                    pending.append(task)
+                else:
+                    planned[split_name].append(
+                        CachedXCLIPFeature(
+                            feature_path=cache_path,
+                            video_path=sample.video_path,
+                            class_id=sample.class_id,
+                            class_index=sample.class_index,
+                            split=sample.split,
                         )
-                        native_frames = int(
-                            model.config.vision_config.num_frames
-                        )
-                        if num_frames != native_frames:
-                            raise ValueError(
-                                f"{model_name} expects {native_frames} "
-                                f"frames, but --frames is {num_frames}."
+                    )
+                    progress.update(1)
+
+        resolved: dict[Path, CachedXCLIPFeature] = {}
+        if pending:
+            processor = XCLIPProcessor.from_pretrained(model_name)
+            model = XCLIPModel.from_pretrained(model_name).to(device)
+            native_frames = int(model.config.vision_config.num_frames)
+            if num_frames != native_frames:
+                raise ValueError(
+                    f"{model_name} expects {native_frames} frames, but "
+                    f"--frames is {num_frames}."
+                )
+            model.requires_grad_(False)
+            model.eval()
+
+            batches = [
+                pending[start : start + feature_batch_size]
+                for start in range(0, len(pending), feature_batch_size)
+            ]
+            with ThreadPoolExecutor(max_workers=decode_workers) as executor:
+                current: list[
+                    tuple[_PendingXCLIPFeature, Future[np.ndarray]]
+                ] = [
+                    (
+                        task,
+                        executor.submit(
+                            read_uniform_video_frames,
+                            task.sample.video_path,
+                            num_frames,
+                        ),
+                    )
+                    for task in batches[0]
+                ]
+                for batch_index, batch in enumerate(batches):
+                    frames_by_video = [future.result() for _, future in current]
+                    next_futures = (
+                        [
+                            (
+                                task,
+                                executor.submit(
+                                    read_uniform_video_frames,
+                                    task.sample.video_path,
+                                    num_frames,
+                                ),
                             )
-                        model.requires_grad_(False)
-                        model.eval()
-                    feature = extract_xclip_feature(
-                        sample,
+                            for task in batches[batch_index + 1]
+                        ]
+                        if batch_index + 1 < len(batches)
+                        else []
+                    )
+                    features = extract_xclip_feature_batch(
+                        frames_by_video,
                         processor=processor,
                         model=model,
                         device=device,
-                        num_frames=num_frames,
                     )
-                    payload = {
-                        "feature": feature,
-                        "cache_metadata": build_xclip_cache_metadata(
-                            sample,
-                            model_name=model_name,
-                            num_frames=num_frames,
-                        ),
-                    }
-                    torch.save(payload, cache_path)
-                    refreshed_cache_files += 1
-
-                cached[split_name].append(
-                    CachedXCLIPFeature(
-                        feature_path=cache_path,
-                        video_path=sample.video_path,
-                        class_id=sample.class_id,
-                        class_index=sample.class_index,
-                        split=sample.split,
-                    )
-                )
-                progress.update(1)
+                    for task, feature in zip(batch, features, strict=True):
+                        payload = {
+                            "feature": feature,
+                            "cache_metadata": build_xclip_cache_metadata(
+                                task.sample,
+                                model_name=model_name,
+                                num_frames=num_frames,
+                            ),
+                        }
+                        torch.save(payload, task.feature_path)
+                        resolved[task.feature_path] = CachedXCLIPFeature(
+                            feature_path=task.feature_path,
+                            video_path=task.sample.video_path,
+                            class_id=task.sample.class_id,
+                            class_index=task.sample.class_index,
+                            split=task.sample.split,
+                        )
+                        refreshed_cache_files += 1
+                        progress.update(1)
+                    current = next_futures
     finally:
         progress.close()
+
+    cached = {
+        split_name: [
+            (
+                resolved[item.feature_path]
+                if isinstance(item, _PendingXCLIPFeature)
+                else item
+            )
+            for item in items
+        ]
+        for split_name, items in planned.items()
+    }
 
     write_xclip_cache_manifest(
         cache_dir,

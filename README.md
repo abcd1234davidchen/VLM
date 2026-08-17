@@ -34,6 +34,15 @@ uv run vlm experiment xclip
 uv run vlm experiment xclip-vision
 ```
 
+XCLIP cache extraction can overlap CPU video decoding with batched GPU inference. For an 11 GB GPU, start with:
+
+```bash
+uv run vlm embeddings extract --pipeline xclip \
+  --device cuda --feature-batch-size 4 --decode-workers 4
+```
+
+Increase `--feature-batch-size` only while GPU memory has headroom. Existing compatible per-video cache files are still reused, so interrupted extraction can resume without `--force-extract`.
+
 The equivalent `uv run python -m vlm ...` form is also supported. Run any
 command with `--help` to see its dataset, cache, artifact, model, sampling, and
 training options.

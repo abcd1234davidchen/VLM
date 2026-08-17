@@ -143,6 +143,8 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         num_frames=args.frames,
         device=device,
         force_extract=args.force_extract,
+        feature_batch_size=args.feature_batch_size,
+        decode_workers=args.decode_workers,
     )
 
     if args.extract_only:
@@ -154,6 +156,8 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             "model_name": args.model_name,
             "frame_sampling_strategy": FRAME_SAMPLING_STRATEGY,
             "frames": args.frames,
+            "feature_batch_size": args.feature_batch_size,
+            "decode_workers": args.decode_workers,
             "cache_dir": str(cache_dir),
             "split_summary": split_summary,
         }
@@ -334,6 +338,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Uniform whole-video frames; must match the checkpoint.",
     )
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument(
+        "--feature-batch-size",
+        type=int,
+        default=1,
+        help="Videos encoded together per XCLIP cache inference call.",
+    )
+    parser.add_argument(
+        "--decode-workers",
+        type=int,
+        default=1,
+        help="CPU workers used to decode videos for XCLIP caching.",
+    )
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--learning-rate", type=float, default=8e-4)
     parser.add_argument("--dropout", type=float, default=0.4)

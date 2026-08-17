@@ -66,6 +66,8 @@ class TrainingArgumentTest(unittest.TestCase):
             "microsoft/xclip-base-patch32",
         )
         self.assertEqual(arguments.frames, 8)
+        self.assertEqual(arguments.feature_batch_size, 1)
+        self.assertEqual(arguments.decode_workers, 1)
 
 
 if __name__ == "__main__":
