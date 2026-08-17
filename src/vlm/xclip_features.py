@@ -158,7 +158,7 @@ def extract_xclip_feature(
     num_frames: int,
 ) -> torch.Tensor:
     frames = read_uniform_video_frames(sample.video_path, num_frames)
-    inputs = processor(videos=list(frames), return_tensors="pt")
+    inputs = processor(images=list(frames), return_tensors="pt")
     pixel_values = inputs["pixel_values"].to(device)
     with torch.inference_mode():
         output = model.get_video_features(pixel_values=pixel_values)

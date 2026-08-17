@@ -44,7 +44,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     started_at = time.perf_counter()
     inputs = processor(
         text=args.texts,
-        videos=list(video),
+        images=list(video),
         return_tensors="pt",
         padding=True,
     )

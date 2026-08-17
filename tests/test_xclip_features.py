@@ -112,7 +112,7 @@ class XCLIPFeatureTest(unittest.TestCase):
             62_584,
         )
 
-    def test_extractor_uses_video_processor_and_pooler_output(self) -> None:
+    def test_extractor_uses_image_processor_and_pooler_output(self) -> None:
         sample = VideoSample(
             video_path=Path("dataset/video.mp4"),
             class_id=1,
@@ -121,8 +121,8 @@ class XCLIPFeatureTest(unittest.TestCase):
         )
 
         class Processor:
-            def __call__(self, *, videos, return_tensors):
-                self.videos = videos
+            def __call__(self, *, images, return_tensors):
+                self.images = images
                 self.return_tensors = return_tensors
                 return {
                     "pixel_values": torch.zeros(1, 8, 3, 4, 4)
@@ -149,7 +149,7 @@ class XCLIPFeatureTest(unittest.TestCase):
                 num_frames=8,
             )
 
-        self.assertEqual(len(processor.videos), 8)
+        self.assertEqual(len(processor.images), 8)
         self.assertEqual(processor.return_tensors, "pt")
         self.assertEqual(model.pixel_values.shape, (1, 8, 3, 4, 4))
         self.assertEqual(feature.shape, (512,))
