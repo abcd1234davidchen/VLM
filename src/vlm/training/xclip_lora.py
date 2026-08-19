@@ -400,18 +400,19 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
     parity_features, _ = next(iter(val_loader))
     parity_features = parity_features.to(device)
     model.eval()
-    with torch.inference_mode(), torch.autocast(
-        device_type=device.type,
-        dtype=amp_dtype,
-        enabled=amp_enabled,
-    ):
+    # Check the algebraic merge in FP32. Under CUDA autocast the unmerged path
+    # performs two low-precision linear operations while the merged path performs
+    # one, so BF16/FP16 rounding alone can exceed a meaningful parity tolerance.
+    # Keeping both forwards outside the same autocast context also prevents its
+    # cast-weight cache from spanning the in-place base-weight update.
+    with torch.inference_mode():
         unmerged_logits = model(parity_features)
         merge_lora(model.mit)
         merged_logits = model(parity_features)
     parity_error = float(
         (unmerged_logits - merged_logits).abs().max().cpu().item()
     )
-    parity_tolerance = 1e-3 if amp_enabled else 1e-5
+    parity_tolerance = 1e-5
     if parity_error > parity_tolerance:
         unmerge_lora(model.mit)
         raise RuntimeError(
