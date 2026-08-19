@@ -23,16 +23,20 @@ uv run vlm train multiclass
 uv run vlm train prototype
 uv run vlm train binary
 uv run vlm train xclip
+uv run vlm train xclip-lora
 
 uv run vlm embeddings extract --pipeline multiclass
 uv run vlm embeddings extract --pipeline prototype
 uv run vlm embeddings extract --pipeline binary
 uv run vlm embeddings extract --pipeline xclip
+uv run vlm embeddings extract --pipeline xclip-lora
 
 uv run vlm experiment clip
 uv run vlm experiment xclip
 uv run vlm experiment xclip-vision
 ```
+
+`xclip-lora` trains project-owned LoRA adapters on the XCLIP MIT q/v attention projections plus a new classification head. `uv run vlm embeddings extract --pipeline xclip-lora` builds only the isolated pre-MIT cache, while `uv run vlm train xclip-lora` performs cache preparation and CE-only training.
 
 XCLIP cache extraction can overlap CPU video decoding with batched GPU inference. For an 11 GB GPU, start with:
 
@@ -157,6 +161,26 @@ uv run vlm embeddings extract --pipeline xclip \
 ```
 
 The first run downloads `microsoft/xclip-base-patch32`, samples eight deterministic whole-video frames per video, and writes frozen features under `cache/xclip_features/`. Training writes `selected_split.json`, `xclip_classifier.pt`, `evaluation_results.json`, and `accuracy_graph.png` under `artifacts/xclip/`. Pass the same canonical manifest used by another pipeline through `--split-manifest`; video membership remains identical while the XCLIP artifact records its own eight-frame sampling policy.
+
+### XCLIP MIT LoRA Cache Foundation
+
+Prepare the LoRA pipeline's projected per-frame features with the same split and sampling policy:
+
+```bash
+uv run vlm embeddings extract --pipeline xclip-lora \
+  --split-manifest artifacts/xclip/selected_split.json
+```
+
+This command stores `[8, 512]` projected frame tensors under `cache/xclip_pre_mit_features/` and writes `cache/xclip_pre_mit_feature_manifest.json`. It does not read or overwrite the frozen post-MIT `[512]` cache.
+
+Run the CE-only MIT LoRA control experiment with:
+
+```bash
+uv run vlm train xclip-lora \
+  --split-manifest artifacts/xclip/selected_split.json
+```
+
+The default run trains rank-8 LoRA adapters on every MIT self-attention `q_proj` and `v_proj` plus the `LayerNorm → Dropout → Linear` head for 60 epochs. It selects the checkpoint by validation accuracy, evaluates test once after restoring the best epoch, and writes adapter and merged checkpoints, `run_config.json`, `evaluation_results.json`, and `accuracy_graph.png` under `artifacts/xclip_lora_ce/`.
 
 ## Archive and Legacy Code
 

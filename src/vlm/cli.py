@@ -13,6 +13,7 @@ TRAIN_COMMANDS = {
     "prototype": "vlm.training.prototype",
     "binary": "vlm.training.binary",
     "xclip": "vlm.training.xclip",
+    "xclip-lora": "vlm.training.xclip_lora",
 }
 EXPERIMENT_COMMANDS = {
     "clip": "vlm.experiments.clip_video",
@@ -82,10 +83,11 @@ def _invoke(
 
 
 def _dispatch_embeddings(argv: list[str]) -> None:
+    pipeline_choices = ",".join(TRAIN_COMMANDS)
     if not argv or argv[0] in {"-h", "--help"}:
         print(
             "usage: vlm embeddings extract --pipeline "
-            "{multiclass,prototype,binary,xclip} [options]"
+            f"{{{pipeline_choices}}} [options]"
         )
         return
     action, *remaining = argv
@@ -99,7 +101,7 @@ def _dispatch_embeddings(argv: list[str]) -> None:
     ):
         print(
             "usage: vlm embeddings extract --pipeline "
-            "{multiclass,prototype,binary,xclip} [options]\n\n"
+            f"{{{pipeline_choices}}} [options]\n\n"
             "Select a pipeline, then append --help to see its options."
         )
         return

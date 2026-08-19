@@ -217,3 +217,33 @@ Checkpoint 不應存 text-related runtime state或 optimizer backward graph。�
 - `evaluation_results.json`足以重現model、split、sampling、optimizer、LoRA、precision與batch設定。
 - 完整60-epoch CE-only結果可和validation 0.3927／test 0.4254的frozen baseline直接比較。
 - 文件清楚標示本階段沒有使用SkeletonCLIP，並把此結果定位為下一階段distillation的control baseline。
+
+## 14. 目前程式基線與下一步
+
+截至目前，repository tree 已有 frozen XCLIP baseline：`src/vlm/xclip_features.py` 負責 whole-video uniform 8-frame decode、post-MIT `get_video_features()` cache 與 dataset；`src/vlm/models/xclip.py` 只有固定 512 維輸入的 classification head；`src/vlm/training/xclip.py` 負責 split、cache、validation-selected training 與 artifacts。LoRA、pre-MIT cache 與 `xclip-lora` training module 尚未存在，因此不能把現有 post-MIT `[512]` cache 直接接到 LoRA training。
+
+新增程式必須遵守目前的 `src` package tree，不在 repository root 增加 executable script，也不修改 `archive/legacy_scripts/`。下一個實作切片預計新增以下位置：
+
+```text
+src/vlm/
+├── xclip_pre_mit_features.py
+├── models/
+│   ├── lora.py
+│   └── xclip_lora.py
+└── training/
+    └── xclip_lora.py
+```
+
+CLI 目前由 `src/vlm/cli.py` 的 `TRAIN_COMMANDS` 集中 dispatch；`vlm embeddings extract` 也會使用同一 mapping 選取 training module，再附加 `--extract-only`。因此新增 `"xclip-lora": "vlm.training.xclip_lora"` 時，該 module 的 parser 與 `run_pipeline()` 必須同時支援 training 和 extract-only，且 `--extract-only` 只能建立 pre-MIT cache，不能初始化 optimizer 或進入 training。既有 `xclip` mapping、`vlm train xclip` 與 `--pipeline xclip` 必須保持 frozen post-MIT 行為。
+
+### 下一個實作切片：Phase 1 cache contract 與 CLI skeleton
+
+> 實作狀態（2026-08-19）：Phase 1 至 Phase 3 的程式與 contract tests 已完成，包括 pre-MIT cache、MIT q/v LoRA、CE training、validation selection、adapter／merged checkpoints 與 merge parity；目前環境缺少 `uv` 與 runtime dependencies，尚待在完整開發環境執行整套 tests 與真實 XCLIP smoke run。
+
+1. 先從 `src/vlm/xclip_features.py` 抽出或重用不改語意的 8-frame decode／processor helper；在修改前後執行既有 `tests/test_xclip_features.py`，確認 frozen cache path、metadata、`[512]` shape 與 batch extraction contract 不變。
+2. 新增 `src/vlm/xclip_pre_mit_features.py`，先完成獨立 path、config key、metadata、compatibility validation、manifest filename 與 `[8, 512]` dataset contract。Feature stage 固定為 `pre_mit_projected_frames`，cache root 使用 `cache/xclip_pre_mit_features/`，manifest 使用 `cache/xclip_pre_mit_feature_manifest.json`；任何 `[512]` post-MIT payload 都必須判定為不相容。
+3. 新增最小 `src/vlm/training/xclip_lora.py` parser 與 extract-only pipeline skeleton，預設 artifacts 為 `artifacts/xclip_lora_ce/`，並重用 frozen XCLIP 的 split manifest、class selection、8-frame sampling、`--feature-batch-size` 與 `--decode-workers` contract。此切片尚不開始 LoRA training；沒有 `--extract-only` 時應明確回報 training path 尚未實作，而不是誤用 frozen head。
+4. 在 `src/vlm/cli.py` 註冊 `xclip-lora`，驗證 `vlm train --help`、`vlm train xclip-lora --help`、`vlm embeddings extract --help` 與 `vlm embeddings extract --pipeline xclip-lora --help`。特別確認 help dispatch 不會提前載入 Transformers model，且 extract command 只附加一次 `--extract-only`。
+5. 只新增保護這個邊界所需的測試：pre-MIT 與 post-MIT path／manifest isolation、metadata 與 tensor shape rejection、CLI command registration、extract-only dispatch。完成後再進入 Phase 2，實作 `LoRALinear`、精確 MIT q/v target injection 與 merge parity。
+
+此切片的驗收條件是：兩種 XCLIP cache 可以在同一 `cache/` 下共存且互不讀寫；舊的 frozen CLI 與測試維持通過；新的兩條 CLI surface 可被解析；pre-MIT cache contract 已鎖定，讓下一階段可在不重做 tree、CLI 或 cache identity 的前提下專注實作 LoRA model。

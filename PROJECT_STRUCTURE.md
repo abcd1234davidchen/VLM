@@ -18,6 +18,7 @@
 │       ├── cli.py
 │       ├── config.py
 │       ├── xclip_features.py
+│       ├── xclip_pre_mit_features.py
 │       ├── data/
 │       │   ├── discovery.py
 │       │   ├── splitting.py
@@ -31,14 +32,17 @@
 │       │   ├── gru.py
 │       │   ├── prototype.py
 │       │   ├── temporal.py
-│       │   └── xclip.py
+│       │   ├── xclip.py
+│       │   ├── lora.py
+│       │   └── xclip_lora.py
 │       ├── training/
 │       │   ├── arguments.py
 │       │   ├── binary.py
 │       │   ├── engine.py
 │       │   ├── multiclass.py
 │       │   ├── prototype.py
-│       │   └── xclip.py
+│       │   ├── xclip.py
+│       │   └── xclip_lora.py
 │       ├── evaluation/
 │       │   ├── binary.py
 │       │   └── multiclass.py
@@ -118,11 +122,14 @@ uv run vlm train multiclass
 uv run vlm train prototype
 uv run vlm train binary
 uv run vlm train xclip
+uv run vlm train xclip-lora
 ```
 
 Existing training arguments such as dataset path, cache path, artifact path,
 model identifier, epochs, batch sizes, learning rate, sequence length, device,
 and force-extraction options remain available on the relevant command.
+
+The `xclip-lora` pipeline uses the same command surface for isolated pre-MIT cache extraction and MIT LoRA + CE training. Its adapter and merged checkpoints remain separate from frozen XCLIP artifacts.
 
 ### Embedding extraction
 
@@ -131,6 +138,7 @@ uv run vlm embeddings extract --pipeline multiclass
 uv run vlm embeddings extract --pipeline prototype
 uv run vlm embeddings extract --pipeline binary
 uv run vlm embeddings extract --pipeline xclip
+uv run vlm embeddings extract --pipeline xclip-lora
 ```
 
 ### Experiments
@@ -181,6 +189,8 @@ The following remain available:
 - `PrototypeVideoClassifier`;
 - binary safe/danger GRU classification;
 - frozen XCLIP video-feature classification;
+- pre-MIT XCLIP projected-frame feature extraction for MIT LoRA training;
+- MIT q/v LoRA + CE classification and merged RGB-only MIT inference;
 - per-frame CLIP image/text similarity;
 - XCLIP video/text similarity;
 - XCLIP vision feature extraction.
@@ -206,7 +216,10 @@ Legacy defaults remain supported:
 | Binary accuracy plot | `artifacts/binary/accuracy_graph.png` |
 | XCLIP frozen features | `cache/xclip_features/` |
 | XCLIP feature manifest | `cache/xclip_feature_manifest.json` |
+| XCLIP pre-MIT features | `cache/xclip_pre_mit_features/` |
+| XCLIP pre-MIT manifest | `cache/xclip_pre_mit_feature_manifest.json` |
 | XCLIP split | `artifacts/xclip/selected_split.json` |
 | XCLIP checkpoint | `artifacts/xclip/xclip_classifier.pt` |
 | XCLIP results | `artifacts/xclip/evaluation_results.json` |
 | XCLIP accuracy plot | `artifacts/xclip/accuracy_graph.png` |
+| XCLIP LoRA CE artifacts | `artifacts/xclip_lora_ce/` |
