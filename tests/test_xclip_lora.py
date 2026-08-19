@@ -5,6 +5,7 @@ import unittest
 import torch
 from torch import nn
 
+from vlm.models import XCLIPMITClassifier
 from vlm.models.lora import (
     LoRALinear,
     audit_trainable_parameters,
@@ -38,7 +39,34 @@ class MIT(nn.Module):
         self.encoder.layers = nn.ModuleList([Layer(), Layer()])
 
 
+class TupleMIT(nn.Module):
+    def forward(self, features: torch.Tensor, *, return_dict: bool) -> object:
+        pooled = features.mean(dim=1)
+        if return_dict:
+            return type("Output", (), {"pooler_output": pooled})()
+        return (features, pooled)
+
+
+class XCLIPStub(nn.Module):
+    projection_dim = 4
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mit = TupleMIT()
+
+
 class XCLIPLoRATest(unittest.TestCase):
+    def test_classifier_requests_structured_mit_output(self) -> None:
+        model = XCLIPMITClassifier(
+            XCLIPStub(),
+            num_classes=2,
+            head_dropout=0,
+        )
+
+        logits = model(torch.randn(3, 5, 4))
+
+        self.assertEqual(logits.shape, (3, 2))
+
     def test_injection_targets_only_mit_q_and_v(self) -> None:
         mit = MIT()
         mit.requires_grad_(False)

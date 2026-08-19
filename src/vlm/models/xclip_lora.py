@@ -34,7 +34,10 @@ class XCLIPMITClassifier(nn.Module):
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        video_features = self.mit(features).pooler_output
+        # The MIT module defaults to tuple output when the XCLIP config has
+        # return_dict=False. Request the structured output explicitly because
+        # the classifier consumes its pooled representation.
+        video_features = self.mit(features, return_dict=True).pooler_output
         return self.classifier(video_features)
 
 
