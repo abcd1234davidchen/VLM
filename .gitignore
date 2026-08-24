@@ -10,3 +10,4 @@
 *.egg-info/
 /dataset/*.gif
 __pycache__/
+RGB_vids
