@@ -12,10 +12,13 @@ These rules record explicit behavior corrections made by the user while working 
 - The user often writes requests in English, but prefers responses in natural Traditional Chinese (`繁體中文`) by default.
 - Keep code, identifiers, commands, filenames, and technical terms in English when translating them would reduce precision.
 
-## Git branches
+## Git conventions
 
 - Do not use the `codex/` prefix for branches in this repository.
 - Use a short, descriptive branch name such as `benchmark-foundation`.
+- For commit messages, the format would be `<type>: <short description>`, where `<type>` is one of `feat`, `fix`, `refactor`, `test`, or `docs`.
+- I prefer to put docs inside the last commit of a feature branch, rather than in a separate commit, unless the docs are a major addition or change.
+- I would often use `git commit --amend` to update the last commit message or content when it is not pushed yet, rather than creating a new commit for small changes.
 
 ## Graphify freshness
 
