@@ -41,6 +41,7 @@ from vlm.training.engine import ValidationCheckpoint, resolve_device, set_seed
 from vlm.xclip_features import FRAME_SAMPLING_STRATEGY
 from vlm.xclip_pre_mit_features import (
     FEATURE_STAGE,
+    CachedXCLIPPreMITFeature,
     CachedXCLIPPreMITDataset,
     extract_or_load_xclip_pre_mit_features,
 )
@@ -223,11 +224,25 @@ def _scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
+def build_cached_datasets(
+    cached: dict[str, list[CachedXCLIPPreMITFeature]],
+    *,
+    preload: bool,
+) -> dict[str, CachedXCLIPPreMITDataset]:
+    """Build split datasets, optionally loading every tensor into RAM once."""
+    return {
+        split_name: CachedXCLIPPreMITDataset(samples, preload=preload)
+        for split_name, samples in cached.items()
+    }
+
+
 def run_pipeline(
     args: argparse.Namespace,
     *,
     evaluate_test: bool = True,
     cache_read_only: bool = False,
+    prepared_cached: dict[str, list[CachedXCLIPPreMITFeature]] | None = None,
+    prepared_datasets: dict[str, CachedXCLIPPreMITDataset] | None = None,
 ) -> dict[str, object]:
     if args.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
@@ -240,6 +255,8 @@ def run_pipeline(
         and args.early_stopping_patience < 1
     ):
         raise ValueError("early_stopping_patience must be at least 1")
+    if args.train_eval_frequency < 1:
+        raise ValueError("train_eval_frequency must be at least 1")
     set_seed(args.seed)
     videos_dir = Path(args.videos_dir)
     cache_dir = Path(args.cache_dir)
@@ -311,17 +328,25 @@ def run_pipeline(
         source_manifest=source_manifest,
     )
     device = resolve_device(args.device)
-    cached = extract_or_load_xclip_pre_mit_features(
-        split,
-        cache_dir=cache_dir,
-        model_name=args.model_name,
-        num_frames=args.frames,
-        device=device,
-        force_extract=args.force_extract,
-        feature_batch_size=args.feature_batch_size,
-        decode_workers=args.decode_workers,
-        read_only=cache_read_only,
-    )
+    cached = prepared_cached
+    if cached is None:
+        cached = extract_or_load_xclip_pre_mit_features(
+            split,
+            cache_dir=cache_dir,
+            model_name=args.model_name,
+            num_frames=args.frames,
+            device=device,
+            force_extract=args.force_extract,
+            feature_batch_size=args.feature_batch_size,
+            decode_workers=args.decode_workers,
+            read_only=cache_read_only,
+        )
+    expected_counts = {name: len(samples) for name, samples in split.items()}
+    actual_counts = {name: len(samples) for name, samples in cached.items()}
+    if actual_counts != expected_counts:
+        raise ValueError(
+            "Prepared XCLIP cache split counts do not match the manifest"
+        )
     extraction_summary = {
         "device": str(device),
         "train_samples": len(cached["train"]),
@@ -338,7 +363,7 @@ def run_pipeline(
     }
     if args.extract_only:
         print(json.dumps(extraction_summary, indent=2))
-        return extraction_summary
+        return {**extraction_summary, "_cached_features": cached}
 
     loader_options = {
         "batch_size": args.batch_size,
@@ -348,14 +373,18 @@ def run_pipeline(
             args.persistent_workers and args.loader_workers > 0
         ),
     }
-    canonical_train_dataset = CachedXCLIPPreMITDataset(cached["train"])
+    datasets = prepared_datasets or build_cached_datasets(
+        cached,
+        preload=args.preload_cache,
+    )
+    canonical_train_dataset = datasets["train"]
     train_dataset = TrainingFeatureAugmentationDataset(
         canonical_train_dataset,
         frame_dropout=args.frame_dropout,
         temporal_jitter=args.temporal_jitter,
         feature_noise_std=args.feature_noise_std,
     )
-    val_dataset = CachedXCLIPPreMITDataset(cached["val"])
+    val_dataset = datasets["val"]
     train_loader = DataLoader(train_dataset, shuffle=True, **loader_options)
     train_eval_loader = DataLoader(
         canonical_train_dataset,
@@ -365,7 +394,7 @@ def run_pipeline(
     val_loader = DataLoader(val_dataset, shuffle=False, **loader_options)
     test_loader = (
         DataLoader(
-            CachedXCLIPPreMITDataset(cached["test"]),
+            datasets["test"],
             shuffle=False,
             **loader_options,
         )
@@ -418,7 +447,7 @@ def run_pipeline(
         args.batch_size * args.gradient_accumulation_steps
     )
 
-    history: list[dict[str, float]] = []
+    history: list[dict[str, float | None]] = []
     best_checkpoint = ValidationCheckpoint()
     epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
@@ -433,13 +462,6 @@ def run_pipeline(
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             epoch=epoch,
-        )
-        train_accuracy, _ = evaluate_features(
-            model,
-            train_eval_loader,
-            cached["train"],
-            device,
-            class_ids,
         )
         val_accuracy, _ = evaluate_features(
             model,
@@ -457,6 +479,25 @@ def run_pipeline(
         epochs_without_improvement = (
             0 if improved else epochs_without_improvement + 1
         )
+        should_stop = (
+            args.early_stopping_patience is not None
+            and epochs_without_improvement >= args.early_stopping_patience
+        )
+        should_evaluate_train = (
+            epoch == 1
+            or epoch % args.train_eval_frequency == 0
+            or epoch == args.epochs
+            or should_stop
+        )
+        train_accuracy: float | None = None
+        if should_evaluate_train:
+            train_accuracy, _ = evaluate_features(
+                model,
+                train_eval_loader,
+                cached["train"],
+                device,
+                class_ids,
+            )
         history.append(
             {
                 "epoch": float(epoch),
@@ -465,15 +506,17 @@ def run_pipeline(
                 "val_accuracy": val_accuracy,
             }
         )
+        train_accuracy_text = (
+            f"{train_accuracy:.4f}"
+            if train_accuracy is not None
+            else "n/a"
+        )
         print(
             f"epoch={epoch:02d} train_loss={loss:.4f} "
-            f"train_accuracy={train_accuracy:.4f} "
+            f"train_accuracy={train_accuracy_text} "
             f"val_accuracy={val_accuracy:.4f}"
         )
-        if (
-            args.early_stopping_patience is not None
-            and epochs_without_improvement >= args.early_stopping_patience
-        ):
+        if should_stop:
             print(
                 "early_stopping "
                 f"epoch={epoch} patience={args.early_stopping_patience}"
@@ -620,6 +663,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decode-workers", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--loader-workers", type=int, default=0)
+    parser.add_argument(
+        "--preload-cache",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--train-eval-frequency", type=int, default=1)
     parser.add_argument(
         "--pin-memory",
         action=argparse.BooleanOptionalAction,

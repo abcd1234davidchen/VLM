@@ -34,8 +34,10 @@ RESUME_CONTROL_KEYS = {
     "fail_fast",
     "force_extract",
     "max_trials",
+    "preload_cache",
     "rerun_failed",
     "resume",
+    "train_eval_frequency",
 }
 
 
@@ -76,7 +78,6 @@ def stage_candidates(
         elif stage == 1:
             candidates.extend(
                 [
-                    dict(base),
                     _with(base, lora_learning_rate=5e-5),
                     _with(base, lora_learning_rate=2e-4),
                     _with(base, head_learning_rate=4e-4),
@@ -282,7 +283,21 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
     preparation = argparse.Namespace(**vars(args))
     preparation.extract_only = True
     preparation.artifacts_dir = str(root / "cache_preparation")
-    xclip_lora.run_pipeline(preparation, evaluate_test=False)
+    preparation_result = xclip_lora.run_pipeline(
+        preparation,
+        evaluate_test=False,
+    )
+    cached = preparation_result["_cached_features"]
+    print(
+        "preloading_shared_cache "
+        f"enabled={args.preload_cache} "
+        f"samples={sum(len(samples) for samples in cached.values())}"
+    )
+    prepared_datasets = xclip_lora.build_cached_datasets(
+        cached,
+        preload=args.preload_cache,
+    )
+    print("preloading_shared_cache complete")
 
     new_trials = 0
     last_stage: int | None = None
@@ -341,6 +356,8 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
                     trial_args,
                     evaluate_test=False,
                     cache_read_only=True,
+                    prepared_cached=cached,
+                    prepared_datasets=prepared_datasets,
                 )
                 record.update(
                     state="completed",
@@ -379,10 +396,20 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
         **winner,
         "seed": int(aggregates[0]["seeds"][0]),
         "split_manifest": args.split_manifest,
+        "videos_dir": args.videos_dir,
         "cache_dir": args.cache_dir,
         "model_name": args.model_name,
         "frames": args.frames,
         "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "loader_workers": args.loader_workers,
+        "pin_memory": args.pin_memory,
+        "persistent_workers": args.persistent_workers,
+        "preload_cache": args.preload_cache,
+        "train_eval_frequency": args.train_eval_frequency,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "max_grad_norm": args.max_grad_norm,
+        "amp": args.amp,
     }
     winning_path = root / "winning_config.json"
     _write_json_atomic(winning_path, winning_config)
@@ -407,6 +434,8 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
             final_args,
             evaluate_test=True,
             cache_read_only=True,
+            prepared_cached=cached,
+            prepared_datasets=prepared_datasets,
         )
     except Exception as error:
         summary.update(
@@ -448,6 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Run a resumable, staged validation-only XCLIP LoRA search."
     )
     parser.set_defaults(artifacts_dir="artifacts/xclip_lora_tuning")
+    parser.set_defaults(preload_cache=True, train_eval_frequency=5)
     parser.add_argument(
         "--stages",
         type=int,

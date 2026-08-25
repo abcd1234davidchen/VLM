@@ -11,6 +11,18 @@ from vlm.training import xclip_lora_tune as tuning
 
 
 class XCLIPLoRATuningTest(unittest.TestCase):
+    def test_optimization_stage_reuses_stage_zero_control(self) -> None:
+        control = tuning._control()
+
+        candidates = tuning.stage_candidates(
+            1,
+            [control],
+            confirmation_seeds=[42],
+        )
+
+        self.assertEqual(len(candidates), 5)
+        self.assertNotIn(control, candidates)
+
     def test_capacity_stage_preserves_alpha_over_rank_scaling(self) -> None:
         candidates = tuning.stage_candidates(
             2,
@@ -78,12 +90,23 @@ class XCLIPLoRATuningTest(unittest.TestCase):
                 *,
                 evaluate_test=True,
                 cache_read_only=False,
+                prepared_cached=None,
+                prepared_datasets=None,
             ):
                 if namespace.extract_only:
                     self.assertFalse(evaluate_test)
                     self.assertFalse(cache_read_only)
-                    return {"test_evaluated": False}
+                    return {
+                        "test_evaluated": False,
+                        "_cached_features": {
+                            "train": [],
+                            "val": [],
+                            "test": [],
+                        },
+                    }
                 self.assertTrue(cache_read_only)
+                self.assertIsNotNone(prepared_cached)
+                self.assertIsNotNone(prepared_datasets)
                 result = {
                     "validation_accuracy": 0.5,
                     "best_epoch": 1,

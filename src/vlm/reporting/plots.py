@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 
 def save_accuracy_plot(
-    history: list[dict[str, float]],
+    history: list[dict[str, float | None]],
     path: Path,
     *,
     train_key: str,

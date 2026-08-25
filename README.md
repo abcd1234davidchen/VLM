@@ -196,6 +196,8 @@ The tuning command prepares the shared pre-MIT cache once, runs curated optimiza
 
 Feature augmentation is sampled after cached tensors are loaded and is training-only. `--frame-dropout`, `--temporal-jitter`, and `--feature-noise-std` therefore leave the canonical cache unchanged; `--warmup-epochs` and `--early-stopping-patience` support optimization-stage trials.
 
+The tuning orchestrator verifies the shared cache once, preloads its feature tensors into RAM once, and reuses the same in-memory datasets across every trial. This avoids repeated scans and per-sample `.pt` reads; use `--no-preload-cache` only when host memory is constrained. Validation still runs every epoch for checkpoint selection, while tuning records full train-set accuracy every five epochs by default through `--train-eval-frequency 5`.
+
 ## Archive and Legacy Code
 
 The complete pre-restructure standalone implementations are frozen under

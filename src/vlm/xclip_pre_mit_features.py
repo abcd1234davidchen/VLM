@@ -45,8 +45,27 @@ class _PendingXCLIPPreMITFeature:
 class CachedXCLIPPreMITDataset(Dataset):
     """Load fixed-length projected frame features from the pre-MIT cache."""
 
-    def __init__(self, samples: list[CachedXCLIPPreMITFeature]) -> None:
+    def __init__(
+        self,
+        samples: list[CachedXCLIPPreMITFeature],
+        *,
+        preload: bool = False,
+    ) -> None:
         self.samples = samples
+        self._features = (
+            [self._load_feature(sample) for sample in samples]
+            if preload
+            else None
+        )
+        self._labels = [
+            torch.tensor(sample.class_index, dtype=torch.long)
+            for sample in samples
+        ]
+
+    @staticmethod
+    def _load_feature(sample: CachedXCLIPPreMITFeature) -> torch.Tensor:
+        payload = torch.load(sample.feature_path, map_location="cpu")
+        return payload["feature"].float()
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -56,10 +75,12 @@ class CachedXCLIPPreMITDataset(Dataset):
         index: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         sample = self.samples[index]
-        payload = torch.load(sample.feature_path, map_location="cpu")
-        feature = payload["feature"].float()
-        label = torch.tensor(sample.class_index, dtype=torch.long)
-        return feature, label
+        feature = (
+            self._features[index]
+            if self._features is not None
+            else self._load_feature(sample)
+        )
+        return feature, self._labels[index]
 
 
 def xclip_pre_mit_cache_config_key(

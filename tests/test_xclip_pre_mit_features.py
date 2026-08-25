@@ -11,6 +11,8 @@ import torch
 from vlm.data import VideoSample
 from vlm.xclip_features import get_xclip_feature_cache_path
 from vlm.xclip_pre_mit_features import (
+    CachedXCLIPPreMITFeature,
+    CachedXCLIPPreMITDataset,
     build_xclip_pre_mit_cache_metadata,
     extract_or_load_xclip_pre_mit_features,
     extract_xclip_pre_mit_feature_batch,
@@ -45,6 +47,25 @@ class XCLIPPreMITFeatureTest(unittest.TestCase):
         self.assertNotEqual(pre_mit, post_mit)
         self.assertIn("xclip_pre_mit_features", str(pre_mit))
         self.assertIn("pre_mit_projected_frames", str(pre_mit))
+
+    def test_preloaded_dataset_does_not_reread_feature_file(self) -> None:
+        with TemporaryDirectory() as directory:
+            feature_path = Path(directory) / "feature.pt"
+            torch.save({"feature": torch.ones(8, 4)}, feature_path)
+            cached = CachedXCLIPPreMITFeature(
+                feature_path=feature_path,
+                video_path=self.sample.video_path,
+                class_id=self.sample.class_id,
+                class_index=self.sample.class_index,
+                split=self.sample.split,
+            )
+            dataset = CachedXCLIPPreMITDataset([cached], preload=True)
+            torch.save({"feature": torch.zeros(8, 4)}, feature_path)
+
+            feature, label = dataset[0]
+
+        self.assertTrue(torch.equal(feature, torch.ones(8, 4)))
+        self.assertEqual(label.item(), 0)
 
     def test_cache_requires_projected_frame_matrix(self) -> None:
         metadata = build_xclip_pre_mit_cache_metadata(

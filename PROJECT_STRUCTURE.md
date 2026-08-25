@@ -133,7 +133,7 @@ and force-extraction options remain available on the relevant command.
 
 The `xclip-lora` pipeline uses the same command surface for isolated pre-MIT cache extraction and MIT LoRA + CE training. Its adapter and merged checkpoints remain separate from frozen XCLIP artifacts.
 
-The `xclip-lora-tune` orchestrator delegates each validation-only trial to `xclip-lora`, promotes a bounded set of candidates between stages, records failed or interrupted states, and exports a reusable winning configuration. After selection is fixed, it delegates one final winner run with test evaluation to the ordinary LoRA pipeline; model, cache, checkpoint, and evaluation contracts remain there.
+The `xclip-lora-tune` orchestrator verifies and preloads the shared cache once, reuses its in-memory datasets across validation-only trials, promotes a bounded set of candidates between stages, records failed or interrupted states, and exports a reusable winning configuration. After selection is fixed, it delegates one final winner run with test evaluation to the ordinary LoRA pipeline; model, cache, checkpoint, and evaluation contracts remain there.
 
 ### Embedding extraction
 
