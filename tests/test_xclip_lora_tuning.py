@@ -121,6 +121,8 @@ class XCLIPLoRATuningTest(unittest.TestCase):
                 if namespace.extract_only:
                     self.assertFalse(evaluate_test)
                     self.assertFalse(cache_read_only)
+                    self.assertFalse(print_results)
+                    self.assertFalse(print_run_details)
                     return {
                         "test_evaluated": False,
                         "_cached_features": {

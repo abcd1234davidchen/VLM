@@ -289,14 +289,15 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
     preparation = argparse.Namespace(**vars(args))
     preparation.extract_only = True
     preparation.artifacts_dir = str(root / "cache_preparation")
-    print("preparing_shared_cache")
     preparation_result = xclip_lora.run_pipeline(
         preparation,
         evaluate_test=False,
+        print_results=False,
+        print_run_details=False,
     )
     cached = preparation_result["_cached_features"]
     print(
-        "preloading_shared_cache "
+        "shared_cache_preload "
         f"enabled={args.preload_cache} "
         f"samples={sum(len(samples) for samples in cached.values())}"
     )
@@ -304,7 +305,7 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
         cached,
         preload=args.preload_cache,
     )
-    print("preloading_shared_cache complete")
+    print("shared_cache_preload complete")
 
     new_trials = 0
     last_stage: int | None = None

@@ -374,7 +374,8 @@ def run_pipeline(
         "split_summary": split_summary,
     }
     if args.extract_only:
-        print(json.dumps(extraction_summary, indent=2))
+        if print_results:
+            print(json.dumps(extraction_summary, indent=2))
         return {**extraction_summary, "_cached_features": cached}
 
     loader_options = {
