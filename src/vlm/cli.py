@@ -14,6 +14,12 @@ TRAIN_COMMANDS = {
     "binary": "vlm.training.binary",
     "xclip": "vlm.training.xclip",
     "xclip-lora": "vlm.training.xclip_lora",
+    "xclip-lora-tune": "vlm.training.xclip_lora_tune",
+}
+EMBEDDING_COMMANDS = {
+    name: module
+    for name, module in TRAIN_COMMANDS.items()
+    if name != "xclip-lora-tune"
 }
 EXPERIMENT_COMMANDS = {
     "clip": "vlm.experiments.clip_video",
@@ -83,7 +89,7 @@ def _invoke(
 
 
 def _dispatch_embeddings(argv: list[str]) -> None:
-    pipeline_choices = ",".join(TRAIN_COMMANDS)
+    pipeline_choices = ",".join(EMBEDDING_COMMANDS)
     if not argv or argv[0] in {"-h", "--help"}:
         print(
             "usage: vlm embeddings extract --pipeline "
@@ -113,11 +119,11 @@ def _dispatch_embeddings(argv: list[str]) -> None:
     selector.add_argument(
         "--pipeline",
         required=True,
-        choices=tuple(TRAIN_COMMANDS),
+        choices=tuple(EMBEDDING_COMMANDS),
     )
     selected, pipeline_args = selector.parse_known_args(remaining)
     _invoke(
-        TRAIN_COMMANDS[selected.pipeline],
+        EMBEDDING_COMMANDS[selected.pipeline],
         [*pipeline_args, "--extract-only"],
         prog="vlm embeddings extract",
     )

@@ -24,6 +24,7 @@ uv run vlm train prototype
 uv run vlm train binary
 uv run vlm train xclip
 uv run vlm train xclip-lora
+uv run vlm train xclip-lora-tune --split-manifest artifacts/xclip/selected_split.json
 
 uv run vlm embeddings extract --pipeline multiclass
 uv run vlm embeddings extract --pipeline prototype
@@ -53,7 +54,7 @@ training options.
 
 ## Training Pipelines
 
-The four training commands follow the same high-level flow:
+The classifier training commands follow this high-level flow:
 
 ```text
 discover videos
@@ -73,6 +74,8 @@ They share split construction, validation checkpoint selection, evaluation helpe
 | `vlm train prototype` | `PrototypeVideoClassifier` | Same all-video, participant-disjoint train/validation/test split | Selects the best checkpoint by validation accuracy, then evaluates test once |
 | `vlm train binary` | Safe/danger `GRUVideoClassifier` | Participant-disjoint; approximately 2/3 train, 1/6 validation, 1/6 test | Uses validation macro F1, balanced accuracy, and accuracy to select the best checkpoint, then evaluates test once |
 | `vlm train xclip` | Frozen XCLIP video encoder plus `LayerNorm → Dropout → Linear` head | Same all-video, participant-disjoint train/validation/test split | Selects the best checkpoint by validation accuracy, then evaluates test once |
+| `vlm train xclip-lora` | XCLIP MIT q/v LoRA plus classification head | Reuses a canonical participant-disjoint manifest and pre-MIT cache | Selects by validation accuracy, then evaluates test once |
+| `vlm train xclip-lora-tune` | Staged orchestrator over the ordinary LoRA model | Requires one canonical manifest for every trial | Ranks and confirms recipes using validation only, then evaluates the locked winner on test once |
 
 In `PrototypeVideoClassifier`, “prototype” refers to learnable normalized class
 prototypes used to score a GRU-encoded video. It is distinct from the older use
@@ -143,11 +146,11 @@ and participants appearing in more than one split. Multiclass and prototype
 derive contiguous action indices from the selected classes; binary derives its
 safe/danger labels from the same video records.
 
-Default artifacts are isolated under `artifacts/multiclass`, `artifacts/prototype`, `artifacts/binary`, and `artifacts/xclip`.
+Default artifacts are isolated under `artifacts/multiclass`, `artifacts/prototype`, `artifacts/binary`, `artifacts/xclip`, `artifacts/xclip_lora_ce`, and `artifacts/xclip_lora_tuning`.
 
 ### Frozen XCLIP Baseline
 
-Run the fourth training pipeline with all discovered classes and videos:
+Run the frozen XCLIP training pipeline with all discovered classes and videos:
 
 ```bash
 uv run vlm train xclip
@@ -181,6 +184,17 @@ uv run vlm train xclip-lora \
 ```
 
 The default run trains rank-8 LoRA adapters on every MIT self-attention `q_proj` and `v_proj` plus the `LayerNorm → Dropout → Linear` head for 60 epochs. It selects the checkpoint by validation accuracy, evaluates test once after restoring the best epoch, and writes adapter and merged checkpoints, `run_config.json`, `evaluation_results.json`, and `accuracy_graph.png` under `artifacts/xclip_lora_ce/`.
+
+Run the staged hyperparameter search with:
+
+```bash
+uv run vlm train xclip-lora-tune \
+  --split-manifest artifacts/xclip/selected_split.json
+```
+
+The tuning command prepares the shared pre-MIT cache once, runs curated optimization, LoRA-capacity, regularization, feature-augmentation, and multi-seed confirmation stages, and selects only from validation accuracy. Stable trial IDs and `artifacts/xclip_lora_tuning/search_summary.json` make interrupted searches resumable; individual trials never evaluate the test split. After the winner is irrevocably selected, the orchestrator automatically runs that recipe once through the ordinary `xclip-lora` path, evaluates test, and writes the final artifacts under `artifacts/xclip_lora_tuning/winner/`. The reusable recipe remains available as `winning_config.json`.
+
+Feature augmentation is sampled after cached tensors are loaded and is training-only. `--frame-dropout`, `--temporal-jitter`, and `--feature-noise-std` therefore leave the canonical cache unchanged; `--warmup-epochs` and `--early-stopping-patience` support optimization-stage trials.
 
 ## Archive and Legacy Code
 

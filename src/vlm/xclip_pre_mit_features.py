@@ -229,6 +229,7 @@ def extract_or_load_xclip_pre_mit_features(
     feature_batch_size: int = 1,
     decode_workers: int = 1,
     cache_dtype: torch.dtype = torch.float16,
+    read_only: bool = False,
 ) -> dict[str, list[CachedXCLIPPreMITFeature]]:
     """Load compatible pre-MIT features and extract only missing entries."""
     if feature_batch_size < 1:
@@ -295,6 +296,11 @@ def extract_or_load_xclip_pre_mit_features(
 
         resolved: dict[Path, CachedXCLIPPreMITFeature] = {}
         feature_dim: int | None = None
+        if read_only and pending:
+            raise RuntimeError(
+                "The read-only XCLIP pre-MIT cache has "
+                f"{len(pending)} missing or incompatible entries"
+            )
         if pending:
             processor = XCLIPProcessor.from_pretrained(model_name)
             model = XCLIPModel.from_pretrained(model_name).to(device)
@@ -393,14 +399,15 @@ def extract_or_load_xclip_pre_mit_features(
             feature_dim = int(payload["feature"].shape[-1])
         if feature_dim is None:
             raise ValueError("Cannot create an XCLIP cache for an empty split")
-        write_xclip_pre_mit_cache_manifest(
-            cache_dir,
-            cached,
-            model_name=model_name,
-            num_frames=num_frames,
-            feature_dim=feature_dim,
-            dtype=dtype,
-        )
+        if not read_only:
+            write_xclip_pre_mit_cache_manifest(
+                cache_dir,
+                cached,
+                model_name=model_name,
+                num_frames=num_frames,
+                feature_dim=feature_dim,
+                dtype=dtype,
+            )
         return cached
     finally:
         progress.close()

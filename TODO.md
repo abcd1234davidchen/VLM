@@ -91,7 +91,7 @@
 
 ## 訓練管線架構重整
 
-> 目前四條管線皆可獨立執行；以下屬於降低重複與方便後續擴充的架構債，不阻擋 frozen XCLIP baseline 在伺服器執行。新增第五條訓練管線前應優先完成。
+> 目前 classifier 管線與 XCLIP LoRA tuning orchestrator 皆可獨立執行；以下屬於降低重複與方便後續擴充的架構債，不阻擋 frozen XCLIP baseline 或 LoRA tuning 在伺服器執行。
 
 - [ ] 抽出共用 multiclass split preparation，統一 class discovery、`--split-manifest` reuse、video-cap validation、class reindexing、split summary 與 manifest 寫入。
 - [ ] 讓 training engine 透過清楚的 batch／forward adapter 同時支援 variable-length sequence 與 fixed video feature，合併目前重複的 `train_epoch()` 與 `train_feature_epoch()`，但不要把 binary 專屬 loss 與選模規則藏進難以理解的萬用介面。
@@ -155,6 +155,7 @@
 
 - [ ] 增加 regularization 與 sequence augmentation，例如 random frame
       dropout、temporal jitter 或在 embeddings 加入小幅 Gaussian noise。
+      - 已在 XCLIP LoRA tuning mode 加入 cache-safe、training-only 的 frame dropout、temporal jitter 與 Gaussian feature noise；其他訓練管線仍未統一。
 - [ ] 新增 pooled-feature branch，使用 mean、max、standard deviation 等
       temporal statistics，再與 GRU output 融合。
 - [x] Multiclass 與 prototype 預設使用全部找到的影片，避免先前固定的每類

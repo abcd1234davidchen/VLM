@@ -42,7 +42,8 @@
 │       │   ├── multiclass.py
 │       │   ├── prototype.py
 │       │   ├── xclip.py
-│       │   └── xclip_lora.py
+│       │   ├── xclip_lora.py
+│       │   └── xclip_lora_tune.py
 │       ├── evaluation/
 │       │   ├── binary.py
 │       │   └── multiclass.py
@@ -123,6 +124,7 @@ uv run vlm train prototype
 uv run vlm train binary
 uv run vlm train xclip
 uv run vlm train xclip-lora
+uv run vlm train xclip-lora-tune
 ```
 
 Existing training arguments such as dataset path, cache path, artifact path,
@@ -130,6 +132,8 @@ model identifier, epochs, batch sizes, learning rate, sequence length, device,
 and force-extraction options remain available on the relevant command.
 
 The `xclip-lora` pipeline uses the same command surface for isolated pre-MIT cache extraction and MIT LoRA + CE training. Its adapter and merged checkpoints remain separate from frozen XCLIP artifacts.
+
+The `xclip-lora-tune` orchestrator delegates each validation-only trial to `xclip-lora`, promotes a bounded set of candidates between stages, records failed or interrupted states, and exports a reusable winning configuration. After selection is fixed, it delegates one final winner run with test evaluation to the ordinary LoRA pipeline; model, cache, checkpoint, and evaluation contracts remain there.
 
 ### Embedding extraction
 
@@ -223,3 +227,4 @@ Legacy defaults remain supported:
 | XCLIP results | `artifacts/xclip/evaluation_results.json` |
 | XCLIP accuracy plot | `artifacts/xclip/accuracy_graph.png` |
 | XCLIP LoRA CE artifacts | `artifacts/xclip_lora_ce/` |
+| XCLIP LoRA tuning summary and trials | `artifacts/xclip_lora_tuning/` |

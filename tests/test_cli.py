@@ -15,6 +15,7 @@ class CLITest(unittest.TestCase):
             cli.main(["embeddings", "--help"])
 
         self.assertIn("xclip-lora", output.getvalue())
+        self.assertNotIn("xclip-lora-tune", output.getvalue())
 
     def test_xclip_lora_training_dispatch(self) -> None:
         with patch("vlm.cli._invoke") as invoke:
@@ -24,6 +25,16 @@ class CLITest(unittest.TestCase):
             "vlm.training.xclip_lora",
             ["--help"],
             prog="vlm train xclip-lora",
+        )
+
+    def test_xclip_lora_tuning_dispatch(self) -> None:
+        with patch("vlm.cli._invoke") as invoke:
+            cli.main(["train", "xclip-lora-tune", "--help"])
+
+        invoke.assert_called_once_with(
+            "vlm.training.xclip_lora_tune",
+            ["--help"],
+            prog="vlm train xclip-lora-tune",
         )
 
     def test_xclip_lora_embedding_dispatch_adds_extract_only(self) -> None:

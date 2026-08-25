@@ -16,6 +16,7 @@ from vlm.models.lora import (
     merged_base_state_dict,
     unmerge_lora,
 )
+from vlm.training.xclip_lora import TrainingFeatureAugmentationDataset
 
 
 class Attention(nn.Module):
@@ -56,6 +57,29 @@ class XCLIPStub(nn.Module):
 
 
 class XCLIPLoRATest(unittest.TestCase):
+    def test_feature_augmentation_does_not_mutate_canonical_tensor(self) -> None:
+        class Dataset:
+            feature = torch.ones(8, 4)
+
+            def __len__(self) -> int:
+                return 1
+
+            def __getitem__(self, index: int):
+                return self.feature, torch.tensor(0)
+
+        canonical = Dataset()
+        augmented = TrainingFeatureAugmentationDataset(
+            canonical,
+            frame_dropout=0.5,
+            temporal_jitter=1,
+            feature_noise_std=0.1,
+        )
+
+        features, _ = augmented[0]
+
+        self.assertTrue(torch.equal(canonical.feature, torch.ones(8, 4)))
+        self.assertIsNot(features, canonical.feature)
+
     def test_classifier_requests_structured_mit_output(self) -> None:
         model = XCLIPMITClassifier(
             XCLIPStub(),

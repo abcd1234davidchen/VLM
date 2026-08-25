@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import platform
 import subprocess
 from collections.abc import Sequence
@@ -13,6 +14,7 @@ import torch
 from torch import nn
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
 from tqdm import tqdm
 from transformers import XCLIPModel
 from transformers import __version__ as transformers_version
@@ -151,9 +153,93 @@ def train_xclip_lora_epoch(
     return total_loss / len(loader.dataset)
 
 
-def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
+class TrainingFeatureAugmentationDataset(Dataset):
+    """Apply stochastic, cache-safe augmentation after loading a feature."""
+
+    def __init__(
+        self,
+        base: CachedXCLIPPreMITDataset,
+        *,
+        frame_dropout: float,
+        temporal_jitter: int,
+        feature_noise_std: float,
+    ) -> None:
+        if not 0.0 <= frame_dropout < 1.0:
+            raise ValueError("frame_dropout must be in [0, 1)")
+        if temporal_jitter < 0:
+            raise ValueError("temporal_jitter must be non-negative")
+        if feature_noise_std < 0:
+            raise ValueError("feature_noise_std must be non-negative")
+        self.base = base
+        self.frame_dropout = frame_dropout
+        self.temporal_jitter = temporal_jitter
+        self.feature_noise_std = feature_noise_std
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        features, label = self.base[index]
+        features = features.clone()
+        if self.temporal_jitter:
+            positions = torch.arange(features.shape[0])
+            offsets = torch.randint(
+                -self.temporal_jitter,
+                self.temporal_jitter + 1,
+                (features.shape[0],),
+            )
+            positions = (positions + offsets).clamp(
+                min=0,
+                max=features.shape[0] - 1,
+            )
+            features = features[positions]
+        if self.frame_dropout:
+            mask = torch.rand(features.shape[0]) < self.frame_dropout
+            if bool(mask.all()):
+                mask[torch.randint(features.shape[0], ())] = False
+            features[mask] = 0
+        if self.feature_noise_std:
+            features.add_(
+                torch.randn_like(features) * self.feature_noise_std
+            )
+        return features, label
+
+
+def _scheduler(
+    optimizer: torch.optim.Optimizer,
+    *,
+    epochs: int,
+    warmup_epochs: int,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    if warmup_epochs < 0 or warmup_epochs >= epochs:
+        raise ValueError("warmup_epochs must be in [0, epochs)")
+
+    def factor(epoch: int) -> float:
+        if warmup_epochs and epoch < warmup_epochs:
+            return (epoch + 1) / warmup_epochs
+        progress = (epoch - warmup_epochs) / max(1, epochs - warmup_epochs)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
+
+def run_pipeline(
+    args: argparse.Namespace,
+    *,
+    evaluate_test: bool = True,
+    cache_read_only: bool = False,
+) -> dict[str, object]:
     if args.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
+    if args.epochs < 1:
+        raise ValueError("epochs must be at least 1")
+    if args.warmup_epochs < 0 or args.warmup_epochs >= args.epochs:
+        raise ValueError("warmup_epochs must be in [0, epochs)")
+    if (
+        args.early_stopping_patience is not None
+        and args.early_stopping_patience < 1
+    ):
+        raise ValueError("early_stopping_patience must be at least 1")
     set_seed(args.seed)
     videos_dir = Path(args.videos_dir)
     cache_dir = Path(args.cache_dir)
@@ -234,6 +320,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         force_extract=args.force_extract,
         feature_batch_size=args.feature_batch_size,
         decode_workers=args.decode_workers,
+        read_only=cache_read_only,
     )
     extraction_summary = {
         "device": str(device),
@@ -261,17 +348,30 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             args.persistent_workers and args.loader_workers > 0
         ),
     }
-    train_dataset = CachedXCLIPPreMITDataset(cached["train"])
+    canonical_train_dataset = CachedXCLIPPreMITDataset(cached["train"])
+    train_dataset = TrainingFeatureAugmentationDataset(
+        canonical_train_dataset,
+        frame_dropout=args.frame_dropout,
+        temporal_jitter=args.temporal_jitter,
+        feature_noise_std=args.feature_noise_std,
+    )
     val_dataset = CachedXCLIPPreMITDataset(cached["val"])
-    test_dataset = CachedXCLIPPreMITDataset(cached["test"])
     train_loader = DataLoader(train_dataset, shuffle=True, **loader_options)
     train_eval_loader = DataLoader(
-        train_dataset,
+        canonical_train_dataset,
         shuffle=False,
         **loader_options,
     )
     val_loader = DataLoader(val_dataset, shuffle=False, **loader_options)
-    test_loader = DataLoader(test_dataset, shuffle=False, **loader_options)
+    test_loader = (
+        DataLoader(
+            CachedXCLIPPreMITDataset(cached["test"]),
+            shuffle=False,
+            **loader_options,
+        )
+        if evaluate_test
+        else None
+    )
 
     xclip = XCLIPModel.from_pretrained(args.model_name)
     full_base_model_parameters = sum(
@@ -307,9 +407,10 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             weight_decay=args.weight_decay,
         )
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    scheduler = _scheduler(
         optimizer,
-        T_max=args.epochs,
+        epochs=args.epochs,
+        warmup_epochs=args.warmup_epochs,
     )
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     amp_enabled, amp_dtype = _amp_settings(device, args.amp)
@@ -319,6 +420,7 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
 
     history: list[dict[str, float]] = []
     best_checkpoint = ValidationCheckpoint()
+    epochs_without_improvement = 0
     for epoch in range(1, args.epochs + 1):
         loss = train_xclip_lora_epoch(
             model,
@@ -347,10 +449,13 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             class_ids,
         )
         scheduler.step()
-        best_checkpoint.consider(
+        improved = best_checkpoint.consider(
             model,
             epoch=epoch,
             score=val_accuracy,
+        )
+        epochs_without_improvement = (
+            0 if improved else epochs_without_improvement + 1
         )
         history.append(
             {
@@ -365,6 +470,15 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
             f"train_accuracy={train_accuracy:.4f} "
             f"val_accuracy={val_accuracy:.4f}"
         )
+        if (
+            args.early_stopping_patience is not None
+            and epochs_without_improvement >= args.early_stopping_patience
+        ):
+            print(
+                "early_stopping "
+                f"epoch={epoch} patience={args.early_stopping_patience}"
+            )
+            break
 
     best_checkpoint.restore(model)
     validation_accuracy, _ = evaluate_features(
@@ -374,13 +488,17 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         device,
         class_ids,
     )
-    final_accuracy, predictions = evaluate_features(
-        model,
-        test_loader,
-        cached["test"],
-        device,
-        class_ids,
-    )
+    final_accuracy: float | None = None
+    predictions: list[dict[str, object]] | None = None
+    if evaluate_test:
+        assert test_loader is not None
+        final_accuracy, predictions = evaluate_features(
+            model,
+            test_loader,
+            cached["test"],
+            device,
+            class_ids,
+        )
     config = vars(args).copy()
     adapter_path = artifacts_dir / "xclip_lora_classifier.pt"
     merged_path = artifacts_dir / "xclip_lora_merged.pt"
@@ -444,14 +562,14 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         "amp_dtype": str(amp_dtype).removeprefix("torch.") if amp_dtype else None,
         "effective_batch_size": effective_batch_size,
         "target_modules": model.target_modules,
+        "test_evaluated": evaluate_test,
     }
     results = {
         **extraction_summary,
         "history": history,
         "best_epoch": best_checkpoint.epoch,
         "validation_accuracy": validation_accuracy,
-        "final_test_accuracy": final_accuracy,
-        "predictions": predictions,
+        "test_evaluated": evaluate_test,
         "trainable_parameter_audit": audit_payload,
         "adapter_checkpoint_path": str(adapter_path),
         "merged_checkpoint_path": str(merged_path),
@@ -460,6 +578,9 @@ def run_pipeline(args: argparse.Namespace) -> dict[str, object]:
         "micro_batch_size": args.batch_size,
         "effective_batch_size": effective_batch_size,
     }
+    if evaluate_test:
+        results["final_test_accuracy"] = final_accuracy
+        results["predictions"] = predictions
     write_json(artifacts_dir / "run_config.json", run_config)
     write_json(artifacts_dir / "evaluation_results.json", results)
     save_accuracy_plot(
@@ -479,6 +600,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Train MIT LoRA over cached pre-MIT XCLIP features."
     )
     parser.add_argument("--videos-dir", default="dataset/subset264")
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="JSON configuration produced by xclip-lora-tune.",
+    )
     parser.add_argument("--cache-dir", default="cache")
     parser.add_argument(
         "--artifacts-dir",
@@ -505,6 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--warmup-epochs", type=int, default=0)
+    parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--lora-learning-rate", type=float, default=1e-4)
     parser.add_argument("--head-learning-rate", type=float, default=8e-4)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
@@ -515,6 +643,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lora-alpha", type=float, default=16.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument("--dropout", type=float, default=0.4)
+    parser.add_argument("--frame-dropout", type=float, default=0.0)
+    parser.add_argument("--temporal-jitter", type=int, default=0)
+    parser.add_argument("--feature-noise-std", type=float, default=0.0)
     parser.add_argument(
         "--amp",
         action=argparse.BooleanOptionalAction,
@@ -533,8 +664,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    arguments = list(argv) if argv is not None else None
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config")
+    selected, _ = config_parser.parse_known_args(arguments)
+    parser = build_parser()
+    if selected.config:
+        config_path = Path(selected.config)
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("XCLIP LoRA config must be a JSON object")
+        valid = {action.dest for action in parser._actions}
+        unknown = sorted(set(payload) - valid)
+        if unknown:
+            raise ValueError(
+                "Unknown XCLIP LoRA config keys: " + ", ".join(unknown)
+            )
+        parser.set_defaults(**payload)
+    return parser.parse_args(arguments)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
-    run_pipeline(build_parser().parse_args(argv))
+    run_pipeline(parse_args(argv))
 
 
 if __name__ == "__main__":
