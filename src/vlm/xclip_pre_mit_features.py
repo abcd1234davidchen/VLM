@@ -251,6 +251,7 @@ def extract_or_load_xclip_pre_mit_features(
     decode_workers: int = 1,
     cache_dtype: torch.dtype = torch.float16,
     read_only: bool = False,
+    show_progress: bool = True,
 ) -> dict[str, list[CachedXCLIPPreMITFeature]]:
     """Load compatible pre-MIT features and extract only missing entries."""
     if feature_batch_size < 1:
@@ -270,6 +271,7 @@ def extract_or_load_xclip_pre_mit_features(
         desc="XCLIP pre-MIT feature cache",
         unit="video",
         leave=True,
+        disable=not show_progress,
     )
     try:
         for split_name, samples in split.items():

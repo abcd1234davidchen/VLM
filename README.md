@@ -198,6 +198,8 @@ Feature augmentation is sampled after cached tensors are loaded and is training-
 
 The tuning orchestrator verifies the shared cache once, preloads its feature tensors into RAM once, and reuses the same in-memory datasets across every trial. This avoids repeated scans and per-sample `.pt` reads; use `--no-preload-cache` only when host memory is constrained. Validation still runs every epoch for checkpoint selection, while tuning records full train-set accuracy every five epochs by default through `--train-eval-frequency 5`.
 
+Tuning uses compact SSH-friendly logging by default: batch and cache progress bars are disabled, per-trial configuration and result JSON remain in artifacts instead of stdout, and epoch metrics print every five epochs. These logging controls do not change optimizer updates, validation frequency, checkpoint selection, or stored histories.
+
 ## Archive and Legacy Code
 
 The complete pre-restructure standalone implementations are frozen under

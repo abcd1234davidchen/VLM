@@ -30,6 +30,9 @@ HYPERPARAMETER_KEYS = (
 )
 RESUME_CONTROL_KEYS = {
     "artifacts_dir",
+    "batch_progress",
+    "cache_progress",
+    "epoch_log_frequency",
     "extract_only",
     "fail_fast",
     "force_extract",
@@ -174,8 +177,11 @@ def _promote(
     maximum: int,
     margin: float,
 ) -> list[dict[str, object]]:
+    eligible = _successful(records, stage)
+    if stage == 1:
+        eligible = [*_successful(records, 0), *eligible]
     completed = sorted(
-        _successful(records, stage),
+        eligible,
         key=lambda item: float(item["validation_accuracy"]),
         reverse=True,
     )
@@ -283,6 +289,7 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
     preparation = argparse.Namespace(**vars(args))
     preparation.extract_only = True
     preparation.artifacts_dir = str(root / "cache_preparation")
+    print("preparing_shared_cache")
     preparation_result = xclip_lora.run_pipeline(
         preparation,
         evaluate_test=False,
@@ -358,6 +365,8 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
                     cache_read_only=True,
                     prepared_cached=cached,
                     prepared_datasets=prepared_datasets,
+                    print_results=False,
+                    print_run_details=False,
                 )
                 record.update(
                     state="completed",
@@ -436,6 +445,8 @@ def run_tuning(args: argparse.Namespace) -> dict[str, object]:
             cache_read_only=True,
             prepared_cached=cached,
             prepared_datasets=prepared_datasets,
+            print_results=False,
+            print_run_details=False,
         )
     except Exception as error:
         summary.update(
@@ -477,7 +488,13 @@ def build_parser() -> argparse.ArgumentParser:
         "Run a resumable, staged validation-only XCLIP LoRA search."
     )
     parser.set_defaults(artifacts_dir="artifacts/xclip_lora_tuning")
-    parser.set_defaults(preload_cache=True, train_eval_frequency=5)
+    parser.set_defaults(
+        preload_cache=True,
+        train_eval_frequency=5,
+        epoch_log_frequency=5,
+        batch_progress=False,
+        cache_progress=False,
+    )
     parser.add_argument(
         "--stages",
         type=int,
@@ -506,7 +523,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> None:
     result = run_tuning(build_parser().parse_args(argv))
-    print(json.dumps(result, indent=2))
+    trials = list(result["trials"].values())
+    compact = {
+        "state": result["state"],
+        "completed_trials": sum(
+            trial["state"] == "completed" for trial in trials
+        ),
+        "failed_trials": sum(
+            trial["state"] == "failed" for trial in trials
+        ),
+        "winning_config_path": result.get("winning_config_path"),
+        "final_evaluation": result.get("final_evaluation"),
+    }
+    print(json.dumps(compact, indent=2))
 
 
 if __name__ == "__main__":

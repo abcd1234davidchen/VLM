@@ -23,6 +23,29 @@ class XCLIPLoRATuningTest(unittest.TestCase):
         self.assertEqual(len(candidates), 5)
         self.assertNotIn(control, candidates)
 
+        records = {
+            "control": {
+                "stage": 0,
+                "state": "completed",
+                "validation_accuracy": 0.6,
+                "config": control,
+            },
+            "candidate": {
+                "stage": 1,
+                "state": "completed",
+                "validation_accuracy": 0.5,
+                "config": candidates[0],
+            },
+        }
+        promoted = tuning._promote(
+            records,
+            1,
+            maximum=1,
+            margin=0.0,
+        )
+
+        self.assertEqual(promoted, [control])
+
     def test_capacity_stage_preserves_alpha_over_rank_scaling(self) -> None:
         candidates = tuning.stage_candidates(
             2,
@@ -92,6 +115,8 @@ class XCLIPLoRATuningTest(unittest.TestCase):
                 cache_read_only=False,
                 prepared_cached=None,
                 prepared_datasets=None,
+                print_results=True,
+                print_run_details=True,
             ):
                 if namespace.extract_only:
                     self.assertFalse(evaluate_test)
@@ -107,6 +132,8 @@ class XCLIPLoRATuningTest(unittest.TestCase):
                 self.assertTrue(cache_read_only)
                 self.assertIsNotNone(prepared_cached)
                 self.assertIsNotNone(prepared_datasets)
+                self.assertFalse(print_results)
+                self.assertFalse(print_run_details)
                 result = {
                     "validation_accuracy": 0.5,
                     "best_epoch": 1,

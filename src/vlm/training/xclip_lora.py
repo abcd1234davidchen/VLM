@@ -112,13 +112,18 @@ def train_xclip_lora_epoch(
     amp_enabled: bool,
     amp_dtype: torch.dtype | None,
     epoch: int,
+    show_batch_progress: bool,
 ) -> float:
     model.train()
     optimizer.zero_grad(set_to_none=True)
     scaler_enabled = amp_enabled and amp_dtype == torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=scaler_enabled)
     total_loss = 0.0
-    batches = tqdm(loader, desc=f"Epoch {epoch} Training", leave=False)
+    batches = (
+        tqdm(loader, desc=f"Epoch {epoch} Training", leave=False)
+        if show_batch_progress
+        else loader
+    )
     for batch_index, (features, labels) in enumerate(batches, start=1):
         features = features.to(device)
         labels = labels.to(device)
@@ -150,7 +155,8 @@ def train_xclip_lora_epoch(
             optimizer.zero_grad(set_to_none=True)
         batch_loss = loss.item()
         total_loss += batch_loss * features.size(0)
-        batches.set_postfix(loss=f"{batch_loss:.4f}")
+        if show_batch_progress:
+            batches.set_postfix(loss=f"{batch_loss:.4f}")
     return total_loss / len(loader.dataset)
 
 
@@ -243,6 +249,8 @@ def run_pipeline(
     cache_read_only: bool = False,
     prepared_cached: dict[str, list[CachedXCLIPPreMITFeature]] | None = None,
     prepared_datasets: dict[str, CachedXCLIPPreMITDataset] | None = None,
+    print_results: bool = True,
+    print_run_details: bool = True,
 ) -> dict[str, object]:
     if args.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
@@ -257,6 +265,8 @@ def run_pipeline(
         raise ValueError("early_stopping_patience must be at least 1")
     if args.train_eval_frequency < 1:
         raise ValueError("train_eval_frequency must be at least 1")
+    if args.epoch_log_frequency < 1:
+        raise ValueError("epoch_log_frequency must be at least 1")
     set_seed(args.seed)
     videos_dir = Path(args.videos_dir)
     cache_dir = Path(args.cache_dir)
@@ -314,7 +324,8 @@ def run_pipeline(
         name: summarize_split_samples(samples)
         for name, samples in split.items()
     }
-    print(json.dumps({"split_summary": split_summary}, indent=2))
+    if print_run_details:
+        print(json.dumps({"split_summary": split_summary}, indent=2))
     save_split_manifest(
         split,
         artifacts_dir / "selected_split.json",
@@ -340,6 +351,7 @@ def run_pipeline(
             feature_batch_size=args.feature_batch_size,
             decode_workers=args.decode_workers,
             read_only=cache_read_only,
+            show_progress=args.cache_progress,
         )
     expected_counts = {name: len(samples) for name, samples in split.items()}
     actual_counts = {name: len(samples) for name, samples in cached.items()}
@@ -427,7 +439,8 @@ def run_pipeline(
     audit_payload["ratio_to_full_base_model"] = (
         audit.trainable_parameters / full_base_model_parameters
     )
-    print(json.dumps({"trainable_parameter_audit": audit_payload}, indent=2))
+    if print_run_details:
+        print(json.dumps({"trainable_parameter_audit": audit_payload}, indent=2))
     optimizer = torch.optim.AdamW(
         _optimizer_groups(
             model,
@@ -462,6 +475,7 @@ def run_pipeline(
             amp_enabled=amp_enabled,
             amp_dtype=amp_dtype,
             epoch=epoch,
+            show_batch_progress=args.batch_progress,
         )
         val_accuracy, _ = evaluate_features(
             model,
@@ -511,11 +525,18 @@ def run_pipeline(
             if train_accuracy is not None
             else "n/a"
         )
-        print(
-            f"epoch={epoch:02d} train_loss={loss:.4f} "
-            f"train_accuracy={train_accuracy_text} "
-            f"val_accuracy={val_accuracy:.4f}"
+        should_log_epoch = (
+            epoch == 1
+            or epoch % args.epoch_log_frequency == 0
+            or epoch == args.epochs
+            or should_stop
         )
+        if should_log_epoch:
+            print(
+                f"epoch={epoch:02d} train_loss={loss:.4f} "
+                f"train_accuracy={train_accuracy_text} "
+                f"val_accuracy={val_accuracy:.4f}"
+            )
         if should_stop:
             print(
                 "early_stopping "
@@ -634,7 +655,8 @@ def run_pipeline(
         evaluation_label="Validation Accuracy",
         title="XCLIP MIT LoRA + CE Training and Validation Accuracy",
     )
-    print(json.dumps(results, indent=2))
+    if print_results:
+        print(json.dumps(results, indent=2))
     return results
 
 
@@ -669,6 +691,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument("--train-eval-frequency", type=int, default=1)
+    parser.add_argument("--epoch-log-frequency", type=int, default=1)
+    parser.add_argument(
+        "--batch-progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--cache-progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument(
         "--pin-memory",
         action=argparse.BooleanOptionalAction,
