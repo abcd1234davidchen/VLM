@@ -83,6 +83,24 @@ Search 應採分階段方式，不直接計算所有選項的 Cartesian product�
 
 Tuning 結果應是一份可交回一般 `xclip-lora` training mode 使用的 reusable configuration。Tuning mode 是 experiment orchestrator，不是新的 inference model 或 checkpoint format。
 
+## 完成結果（2026-08-26）
+
+本計畫已在固定的 `artifacts/xclip/selected_split.json` 上完成 Stage 0–5 與最後一次 locked-winner test evaluation。Split 包含 80,640 個 training samples、12,960 個 validation samples 與 20,880 個 test samples；所有 tuning trials 只使用 validation 選擇 configuration，test 僅在 winner 固定後評估一次。
+
+Winning recipe 為 MIT `q_proj`／`v_proj` LoRA rank 16、alpha 32、LoRA learning rate `2e-4`、head learning rate `8e-4`、LoRA dropout `0.05`、head dropout `0.25`、weight decay `5e-4`、label smoothing `0.05` 與 Gaussian feature noise standard deviation `0.01`。它不使用 warmup、early stopping、frame dropout 或 temporal jitter，最終 run 使用 seed 42、60 epochs、effective batch size 16 與 BF16。
+
+| Model | Best validation accuracy | Final test accuracy |
+|---|---:|---:|
+| Frozen XCLIP baseline | 0.3927 | 0.4254 |
+| Tuned MIT LoRA + CE | 0.5212 | 0.5452 |
+| Absolute improvement | +0.1285 | +0.1198 |
+
+Final run 的 best validation checkpoint 位於 epoch 49。Epoch 60 的 training accuracy 為 0.6973、validation accuracy 為 0.5211，顯示約 0.176 的 train／validation gap，但 validation 在最後數個 epochs 維持約 0.520–0.521，沒有明顯崩落。最終 test accuracy 高於 validation 約 0.024，且 20,880 筆 predictions 與 test sample count 完全一致。
+
+模型只有 95,352 個 trainable parameters，佔完整 196,585,729-parameter XCLIP 約 0.0485%。Merged checkpoint 的 maximum absolute parity error 為 `1.91e-6`，符合 FP32 `1e-5` tolerance。正式 artifacts 由 Git revision `9f1d5618f226fbef31fadb7055ad479231c3f316`、PyTorch `2.10.0+cu128`、Transformers `5.3.0` 與 Python `3.13.13` 產生，位於 `artifacts/xclip_lora_tuning/winner/`。
+
+這份結果支持將 rank-16 tuned LoRA + CE recipe 作為後續 SkeletonCLIP distillation 的 RGB student control。後續 controlled comparison 應固定本 recipe、split、八幀 whole-video sampling、seed policy 與 training budget，再加入 teacher-logit KL supervision；不可重新使用 test 結果調整 distillation hyperparameters。
+
 ## 與 SkeletonCLIP 的關係
 
 只有本計畫產生穩定的 `LoRA + CE` recipe 後，才開始 SkeletonCLIP distillation。第一個 controlled distillation comparison 必須固定選出的 LoRA rank、targets、augmentation、optimizer settings、split、seed policy 與 training budget，然後只把 teacher-logit KL supervision 作為主要新增變因。Temperature 與 KL weight 等 distillation-specific values 可以另外使用 validation 調整。

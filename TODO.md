@@ -80,10 +80,11 @@
 - [x] 第一階段凍結全部 XCLIP 參數，只訓練 classification head。
 - [ ] 評估解凍 MIT 與 visual projection；只有 validation 結果支持時，才考慮部分或完整 fine-tune vision encoder。
 - [ ] 將 SkeletonCLIP teacher distillation 作為優先的 representation adaptation 路線：teacher 使用 NTU skeleton 並在 training split 訓練，RGB XCLIP student 先以 ground-truth action cross-entropy 加 teacher／student logit KL loss 訓練，再用受控 ablation 評估 projected feature cosine loss。
-- [ ] 第一版 distillation student 在 XCLIP MIT attention 加入 LoRA；只有 validation 支持時才將 LoRA 擴展到 vision encoder 上層。Ground-truth loss 必須保留，避免 student 完全複製 teacher 錯誤。
-      - 已完成 MIT `q_proj`／`v_proj` LoRA + ground-truth CE-only control pipeline；尚未加入 SkeletonCLIP teacher、KL loss或distillation實驗。
+- [x] 在 distillation 前完成 XCLIP MIT `q_proj`／`v_proj` LoRA + ground-truth CE-only RGB student control，並在固定 split 上完成 Stage 0–5 validation-only tuning、multi-seed confirmation 與 locked-winner test evaluation；winner recipe 與結果記錄於 `docs/xclip-lora-tuning-plan.md`。
+- [ ] 以已固定的 tuned LoRA + CE recipe 作為第一版 distillation student，加入 SkeletonCLIP teacher-logit KL supervision 並保留 ground-truth CE；只有 validation 支持時才將 LoRA 擴展到 vision encoder 上層。
 - [ ] Distillation 前先單獨評估 SkeletonCLIP teacher，並以 NTU sample identity 精確對齊 RGB 與 skeleton。Teacher 不得使用 validation／test labels 訓練，最終 validation／test 必須以 RGB student 單獨推理。
-- [ ] LoRA training 必須執行線上 XCLIP forward／backward，不能沿用 frozen baseline 的 post-XCLIP 512 維 feature cache；訓練完成並固定 student 後，merge LoRA 到 base weights，再以 merged checkpoint 重建新的 evaluation feature cache。
+- [x] LoRA training 從獨立的 pre-MIT `[8, 512]` cache 執行 MIT forward／backward，不沿用會繞過 MIT 的 frozen post-MIT cache；完成 adapter／merged checkpoints、trainable-parameter audit 與 merge parity validation。
+- [ ] 以 merged checkpoint 重建可直接從 RGB frames 執行的完整 inference path 與 evaluation cache，並驗證其結果和目前 pre-MIT cached evaluation 一致。
 - [ ] 部署合約維持 RGB-only inference：不載入 SkeletonCLIP、skeleton data、pose estimator、distillation loss、optimizer 或 backward graph。Merged LoRA 不增加額外 adapter branch；推理成本主要仍是八幀 decoding 與一次 XCLIP forward。
 - [ ] 對長影片評估多個八幀 temporal windows 並聚合 logits，不依賴單一 random window。
 - [x] XCLIP 支援相同的 participant-disjoint split manifest、validation checkpoint selection 與 random seed，並以獨立 artifact 目錄執行。

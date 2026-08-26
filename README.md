@@ -200,6 +200,12 @@ The tuning orchestrator verifies the shared cache once, preloads its feature ten
 
 Tuning uses compact SSH-friendly logging by default: batch and cache progress bars are disabled, per-trial configuration and result JSON remain in artifacts instead of stdout, and epoch metrics print every five epochs. These logging controls do not change optimizer updates, validation frequency, checkpoint selection, or stored histories.
 
+### Recorded XCLIP LoRA Result
+
+The completed 2026-08-26 search selected rank-16／alpha-32 MIT q/v LoRA with LoRA learning rate `2e-4`, head learning rate `8e-4`, head dropout `0.25`, and Gaussian feature noise `0.01`. On the fixed 80,640／12,960／20,880 train／validation／test split, the validation-selected epoch-49 checkpoint reached 52.12% validation accuracy and 54.52% test accuracy, improving over the recorded frozen XCLIP baseline by 12.85 and 11.98 percentage points respectively. The final model trains 95,352 parameters, or 0.0485% of full XCLIP, and its merged checkpoint passed parity with maximum absolute error `1.91e-6`.
+
+The final artifacts are stored under `artifacts/xclip_lora_tuning/winner/`; `evaluation_results.json` contains the complete history and 20,880 test predictions, while `run_config.json` records the exact recipe and Git revision `9f1d5618f226fbef31c3f316`. This tuned CE-only model is the fixed RGB student control for the next SkeletonCLIP distillation experiment; future teacher-specific hyperparameters must still be selected without using test results.
+
 ## Archive and Legacy Code
 
 The complete pre-restructure standalone implementations are frozen under
