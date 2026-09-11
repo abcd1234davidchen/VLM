@@ -6,6 +6,8 @@
 
 在現有 tuned XCLIP MIT LoRA + CE baseline 加入 skeleton teacher supervision，推理維持八幀 RGB-only。第一版建議採 frozen SkeletonCLIP teacher、離線 teacher logits cache，以及只對有效 RGB–skeleton 配對樣本計算的 KL loss。先保留 120-class RGB 任務，不因 skeleton 缺漏刪除 RGB training samples。
 
+第一版的研究問題是「部分 skeleton teacher supervision 是否改善 120-class RGB classification」，定位為 **skeleton-informed temporal／decision adaptation**，不是 joint-focused visual learning。現有 student 使用 frozen XCLIP vision encoder 產生已 pooled 的 `[8, 512]` frame vectors，KD 只能更新 MIT LoRA 與 classifier；student 沒有 joint coordinates 或 spatial patch supervision，因此即使 accuracy 改善，也不能據此宣稱 vision encoder 的注意力轉向人體關節。
+
 Teacher 優先評估 Hyperformer backbone + frozen CLIP text encoder 的 SkeletonCLIP 路線，但應先確認 checkpoint 的訓練資料與 preprocessing，再決定使用外部初始化或自行訓練。現有資料足以開始 60-class teacher pilot；無法提供完整 NTU120 配對監督。
 
 ## 2. 本地資料盤點
@@ -71,6 +73,8 @@ Text encoder 具體 model ID、feature dimension、prompt templates、tokenizer 
 
 沿用 `src/vlm/models/xclip_lora.py` 的 MIT LoRA classifier 與 `src/vlm/xclip_pre_mit_features.py` 的 `[8, 512]` cache。KD 不解凍 vision encoder、不改 RGB inference head，也不需要每個 epoch 重算 vision features。
 
+這個設計傳遞的是 teacher 對動作類別相對關係的判斷，而不是關節位置。共享的 MIT／head 參數可能從 A001–A060 學到可遷移的 temporal cues，因而間接幫助 A061–A120；但這不是 KD 的保證，也可能因 class、setup 或 participant coverage 偏差而傷害後 60 類。必須分開報告 A001–A060 與 A061–A120，只有後者相對 CE-only control 也穩定改善時，才能主張存在跨類別 transfer。
+
 目前 `artifacts/xclip_lora_tuning/winning_config.json` 的設定為 rank 16、alpha 32、LoRA dropout 0.05、head dropout 0.25、LoRA LR `2e-4`、head LR `8e-4`、weight decay `5e-4`、label smoothing 0.05、feature noise std 0.01、60 epochs、batch size 16、seed 42。實作時讀取並保存完整設定及 hash，不只複製此摘要。Winner artifact 記錄 validation accuracy 0.521219、final test accuracy 0.545163；這是既有結果，不能拿來調 KD。
 
 公平比較採相同 pretrained XCLIP 初始化及 seed 重跑 CE-only 與 CE+KD，固定原 winning recipe。不要只讓 KD 從已訓練 60 epochs 的 winner 接續訓練；若研究續訓，須給 CE-only 相同初始化與額外步數。
@@ -119,8 +123,15 @@ Teacher logits cache 放在 `cache/skeleton_teacher_logits/<identity>/`，與 RG
 
 只新增保護重要契約的測試：identity／split 防漏、parser 失效樣本、class reorder 對應、teacher-cache invalidation、partial-class KL／無配對 batch、teacher gradient isolation，以及 student checkpoint 的 RGB-only reload／merge parity。沿用既有 LoRA checks；一般測試不下載權重或掃完整資料集。
 
-成功標準首先是資料與實驗可信：KD 關閉時重現 CE-only contract，有效配對才提供 teacher supervision，test 不參與選模，推理不依賴 skeleton。是否改善全體及動作子群結果，由 validation 與最終受控評估回答，不預設缺一半類別的 teacher 必然有效。
+成功標準首先是資料與實驗可信：KD 關閉時重現 CE-only contract，有效配對才提供 teacher supervision，test 不參與選模，推理不依賴 skeleton。是否改善全體及動作子群結果，由 validation 與最終受控評估回答，不預設缺一半類別的 teacher 必然有效。第一版若成功，可主張 skeleton-informed RGB classification 或 temporal representation adaptation；沒有 spatial evidence 時不得描述為 joint-focused model。
 
 ## 9. 後續決策
 
 第一個要定案的是 Hyperformer 初始化與 SkeletonCLIP checkpoint 來源，不是先擴大 student。接著依資料 audit 和 teacher validation 決定是否值得補 S018–S032。完整資料到位後才考慮 120-class teacher、online MSE SCD 或 feature alignment，且每項都需要自己的 control。
+
+Student adaptation 分成以下兩個後續層次，不與第一版 class-level KD 同時引入：
+
+1. **Vision upper-layer LoRA + class-level KD**：若第一版 validation 顯示 KD 有效，再對 vision encoder 最後數個 spatial Transformer blocks 加 LoRA，讓 teacher loss 可以影響 RGB spatial features。這會取消完全依賴離線 `[8, 512]` pre-MIT cache 的訓練方式，需從 RGB frames 執行 vision forward。它只能證明 vision adaptation 是否帶來額外效益；class-level loss 仍未指定模型必須看 joints，因此不能單憑分類結果宣稱 joint focus。
+2. **Spatial joint supervision**：只有研究目標明確要求 joint-focused RGB learning 時才投入。保留 patch tokens，將 skeleton joints 可靠地投影並同步到 RGB frames，再以 joint heatmap、joint-to-patch feature 或 attention alignment 直接監督 spatial regions。除分類 metrics 外，還需 joint-region localization、masking／occlusion 等證據，才能支持模型更專注 joints 的主張。
+
+兩個層次都維持 training-only teacher 與 RGB-only deployment。訓練完成後，推理不載入 SkeletonCLIP、skeleton、pose estimator 或 KD loss；只有當未來架構明確把 pose／joint heatmap 設為 inference input 時，才會產生額外 teacher／pose runtime dependency。
