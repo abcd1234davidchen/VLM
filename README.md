@@ -35,7 +35,21 @@ uv run vlm embeddings extract --pipeline xclip-lora
 uv run vlm experiment clip
 uv run vlm experiment xclip
 uv run vlm experiment xclip-vision
+uv run vlm experiment skeleton-gate1
 ```
+
+Run the SkeletonCLIP Phase 1 Gate 0 audit against the canonical RGB split with:
+
+```bash
+uv run vlm data skeleton-audit \
+  --skeleton-dir RGB_vids/nturgb+d_skeletons \
+  --rgb-manifest artifacts/xclip/selected_split.json \
+  --missing-skeletons /path/to/NTU_RGBD_samples_with_missing_skeletons.txt
+```
+
+The missing/incomplete sample list must come from the [NTU RGB+D authors' repository](https://github.com/shahroudy/NTURGB-D/blob/master/Matlab/NTU_RGBD_samples_with_missing_skeletons.txt). The command fully validates all 56,880 NTU60 skeleton files, pairs only canonical train/validation records by complete `S/C/P/R/A` identity, never creates test pairings, and writes `coverage.json`, `paired_manifest.json`, and `excluded_samples.json` under `artifacts/skeleton_data/`. Following Gate 0 review, A060 is explicitly excluded and the Phase 1 teacher contract uses ordered classes A001–A059. Pass one or more `--archive` arguments when safe extraction is needed; existing files are never overwritten.
+
+`vlm experiment skeleton-gate1` runs CPU contract checks and then sequential single-GPU compatibility smoke for the BlockGCN and Hyperformer adapters. It uses 16 real paired training samples, requires at least 95% overfit accuracy, enforces finite loss/gradients, verifies strict checkpoint reload and eval parity, records throughput and peak VRAM, and writes `artifacts/skeletonclip_gate1/compatibility_report.json`. It does not start the Gate 2 bake-off.
 
 `xclip-lora` trains project-owned LoRA adapters on the XCLIP MIT q/v attention projections plus a new classification head. `uv run vlm embeddings extract --pipeline xclip-lora` builds only the isolated pre-MIT cache, while `uv run vlm train xclip-lora` performs cache preparation and CE-only training.
 

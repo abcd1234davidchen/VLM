@@ -19,8 +19,10 @@
 │       ├── config.py
 │       ├── xclip_features.py
 │       ├── xclip_pre_mit_features.py
+│       ├── skeleton_data.py
 │       ├── data/
 │       │   ├── discovery.py
+│       │   ├── skeleton.py
 │       │   ├── splitting.py
 │       │   └── video_io.py
 │       ├── embeddings/
@@ -34,6 +36,7 @@
 │       │   ├── temporal.py
 │       │   ├── xclip.py
 │       │   ├── lora.py
+│       │   ├── skeletonclip.py
 │       │   └── xclip_lora.py
 │       ├── training/
 │       │   ├── arguments.py
@@ -53,6 +56,7 @@
 │       └── experiments/
 │           ├── clip_video.py
 │           ├── video_sampling.py
+│           ├── skeleton_gate1.py
 │           ├── xclip.py
 │           └── xclip_vision.py
 ├── archive/
@@ -151,6 +155,8 @@ uv run vlm embeddings extract --pipeline xclip-lora
 uv run vlm experiment clip
 uv run vlm experiment xclip
 uv run vlm experiment xclip-vision
+uv run vlm experiment skeleton-gate1
+uv run vlm data skeleton-audit --help
 ```
 
 ## Legacy Command Equivalents
@@ -228,3 +234,5 @@ Legacy defaults remain supported:
 | XCLIP accuracy plot | `artifacts/xclip/accuracy_graph.png` |
 | XCLIP LoRA CE artifacts | `artifacts/xclip_lora_ce/` |
 | XCLIP LoRA tuning summary and trials | `artifacts/xclip_lora_tuning/` |
+| SkeletonCLIP Gate 0 audit | `artifacts/skeleton_data/` |
+| SkeletonCLIP Gate 1 compatibility report | `artifacts/skeletonclip_gate1/` |

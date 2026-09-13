@@ -1,6 +1,6 @@
 # SkeletonCLIP teacher distillation 計畫
 
-日期：2026-09-11。狀態：資料盤點與設計；teacher architecture、checkpoint 尚未定案，本文件不代表 training pipeline 已實作。
+日期：2026-09-11。狀態：資料盤點與設計；teacher architecture、checkpoint 尚未定案，本文件不代表 training pipeline 已實作。Teacher feasibility 與 backbone selection 的待審執行規格見 `docs/skeletonclip-teacher-phase1.md`。
 
 ## 1. 目標與建議
 
@@ -8,7 +8,7 @@
 
 第一版的研究問題是「部分 skeleton teacher supervision 是否改善 120-class RGB classification」，定位為 **skeleton-informed temporal／decision adaptation**，不是 joint-focused visual learning。現有 student 使用 frozen XCLIP vision encoder 產生已 pooled 的 `[8, 512]` frame vectors，KD 只能更新 MIT LoRA 與 classifier；student 沒有 joint coordinates 或 spatial patch supervision，因此即使 accuracy 改善，也不能據此宣稱 vision encoder 的注意力轉向人體關節。
 
-Teacher 優先評估 Hyperformer backbone + frozen CLIP text encoder 的 SkeletonCLIP 路線，但應先確認 checkpoint 的訓練資料與 preprocessing，再決定使用外部初始化或自行訓練。現有資料足以開始 60-class teacher pilot；無法提供完整 NTU120 配對監督。
+Teacher 優先評估 Hyperformer backbone + frozen CLIP text encoder 的 SkeletonCLIP 路線，但應先確認 checkpoint 的訓練資料與 preprocessing，再決定使用外部初始化或自行訓練。Gate 0 review 後已排除資料品質嚴重失衡的 A060，現有資料足以開始 A001–A059 的 59-class teacher pilot；無法提供完整 NTU120 配對監督。
 
 ## 2. 本地資料盤點
 
@@ -30,9 +30,9 @@ Teacher 優先評估 Hyperformer backbone + frozen CLIP text encoder 的 Skeleto
 
 ### S001–S017 的影響
 
-- 可以開始：teacher 僅以 canonical train 中有效的 A001–A060 skeleton 訓練，student 在全部 RGB train 上做 120-class CE，KD 只作用於有效配對樣本。
+- 可以開始：teacher 僅以 canonical train 中有效的 A001–A059 skeleton 訓練，student 在全部 RGB train 上做 120-class CE，KD 只作用於有效配對樣本。
 - 監督有偏：paired training 主要涵蓋較早 setups／participants／60 classes；validation 與 test 的配對率更低，不能把 paired subset 的改善推論成全部 120 classes 都改善。
-- 不可補零假裝完整 teacher：60-class teacher 的 logits 不能直接填零擴成 120-class probability distribution。
+- 不可補零假裝完整 teacher：59-class teacher 的 logits 不能直接填零擴成 120-class probability distribution。
 - 要完整 NTU120 配對，需補 `nturgbd_skeletons_s018_to_s032.zip`，再重新審核有效樣本、teacher class coverage 與 cache identity；這是後續資料補齊工作。
 - NTU60-only 可以另做 pilot，但必須建立明確衍生 manifest，結果不能直接與目前 120-class accuracy 並列比較。
 
@@ -50,7 +50,7 @@ Teacher 優先評估 Hyperformer backbone + frozen CLIP text encoder 的 Skeleto
 | --- | --- | --- |
 | 官方 SkeletonCLIP checkpoint | 若可取得且資料來源符合 split，最接近參考方法 | 權重可用性、text model、prompt、class order、訓練 IDs、license、前處理 |
 | Hyperformer + CLIP text，自行訓練／對齊 | 建議優先路線；可控制 canonical train 邊界 | backbone 初始化來源、projection、訓練成本與 teacher validation 表現 |
-| 純 Hyperformer 60-class classifier | 可作 skeleton KD sanity control | 不具 skeleton–language alignment，必須稱為 skeleton classifier teacher，不能標成 SkeletonCLIP |
+| 純 Hyperformer 59-class classifier | 可作 skeleton KD sanity control | 不具 skeleton–language alignment，必須稱為 skeleton classifier teacher，不能標成 SkeletonCLIP |
 
 Hyperformer 官方 repository 提供 NTU60／NTU120 pretrained weights 連結與 preprocessing scripts，但 action classifier checkpoint 不等於已對齊 CLIP 的 SkeletonCLIP。其資料準備也明列兩份 S001–S017／S018–S032 ZIP。[Hyperformer 官方程式碼](https://github.com/ZhouYuxuanYX/Hyperformer)
 
@@ -58,7 +58,7 @@ Teacher checkpoint 的完整 training provenance 是正式實驗的必要條件�
 
 乾淨路線：以 canonical train 的有效 skeleton 從頭訓練 Hyperformer action backbone，再以相同 train 做 skeleton–text CE alignment；CLIP text encoder frozen，只更新 skeleton encoder 及必要 projection。Teacher checkpoint selection 僅看 paired validation，不用 test 選 architecture／epoch／prompt。若使用額外 skeleton training samples，也必须先確保 participant 不跨 canonical 邊界，並另列為額外訓練資料實驗；第一版不擴大 teacher training set。
 
-Text encoder 具體 model ID、feature dimension、prompt templates、tokenizer revision、normalization 與 logit scale 皆需鎖定；不要因兩邊都有 512 維 feature 就假設 embedding space 相同。Teacher 先使用 ordered A001–A060 text vocabulary；選 teacher 主要依 paired validation accuracy、macro-F1、per-class error、校準及 logits 品質，不要求 teacher aggregate accuracy 必須高於 student 才能測試互補效果。
+Text encoder 具體 model ID、feature dimension、prompt templates、tokenizer revision、normalization 與 logit scale 皆需鎖定；不要因兩邊都有 512 維 feature 就假設 embedding space 相同。Teacher 先使用 ordered A001–A059 text vocabulary，並在 provenance 記錄排除 A060；選 teacher 主要依 paired validation accuracy、macro-F1、per-class error、校準及 logits 品質，不要求 teacher aggregate accuracy 必須高於 student 才能測試互補效果。
 
 ## 5. Skeleton preprocessing 與配對 contract
 
@@ -73,13 +73,13 @@ Text encoder 具體 model ID、feature dimension、prompt templates、tokenizer 
 
 沿用 `src/vlm/models/xclip_lora.py` 的 MIT LoRA classifier 與 `src/vlm/xclip_pre_mit_features.py` 的 `[8, 512]` cache。KD 不解凍 vision encoder、不改 RGB inference head，也不需要每個 epoch 重算 vision features。
 
-這個設計傳遞的是 teacher 對動作類別相對關係的判斷，而不是關節位置。共享的 MIT／head 參數可能從 A001–A060 學到可遷移的 temporal cues，因而間接幫助 A061–A120；但這不是 KD 的保證，也可能因 class、setup 或 participant coverage 偏差而傷害後 60 類。必須分開報告 A001–A060 與 A061–A120，只有後者相對 CE-only control 也穩定改善時，才能主張存在跨類別 transfer。
+這個設計傳遞的是 teacher 對動作類別相對關係的判斷，而不是關節位置。共享的 MIT／head 參數可能從 A001–A059 學到可遷移的 temporal cues，因而間接幫助 A060–A120；但這不是 KD 的保證，也可能因 class、setup 或 participant coverage 偏差而傷害其餘 61 類。必須分開報告 A001–A059 與 A060–A120，只有後者相對 CE-only control 也穩定改善時，才能主張存在跨類別 transfer。
 
 目前 `artifacts/xclip_lora_tuning/winning_config.json` 的設定為 rank 16、alpha 32、LoRA dropout 0.05、head dropout 0.25、LoRA LR `2e-4`、head LR `8e-4`、weight decay `5e-4`、label smoothing 0.05、feature noise std 0.01、60 epochs、batch size 16、seed 42。實作時讀取並保存完整設定及 hash，不只複製此摘要。Winner artifact 記錄 validation accuracy 0.521219、final test accuracy 0.545163；這是既有結果，不能拿來調 KD。
 
 公平比較採相同 pretrained XCLIP 初始化及 seed 重跑 CE-only 與 CE+KD，固定原 winning recipe。不要只讓 KD 從已訓練 60 epochs 的 winner 接續訓練；若研究續訓，須給 CE-only 相同初始化與額外步數。
 
-定義 `C_T` 為 teacher 真正受監督的 ordered class IDs，目前為 A001–A060。對 batch 中有效配對集合 `P`，先用 class ID 對應取出 student 的 60 個 logits，再計算兩邊各自在這 60 類上的 softmax：
+定義 `C_T` 為 teacher 真正受監督的 ordered class IDs，目前為 A001–A059。對 batch 中有效配對集合 `P`，先用 class ID 對應取出 student 的 59 個 logits，再計算兩邊各自在這 59 類上的 softmax：
 
 ```text
 p_i = softmax(teacher_logits_i / T)
@@ -116,10 +116,10 @@ Teacher logits cache 放在 `cache/skeleton_teacher_logits/<identity>/`，與 RG
 
 1. 完成解壓與資料 audit：核對 56,880 檔案，套用官方排除清單並完整 parse；輸出各 split／class／setup 的有效配對率、missing 原因與 duplicate 檢查，保留 canonical RGB split。
 2. Teacher feasibility：確認 architecture、checkpoint provenance、text vocabulary 與 preprocessing；跑小型 forward／overfit smoke、量測 GPU memory／throughput，再決定完整 teacher 訓練預算。外部權重無法證明 split 安全時使用乾淨自訓路線。
-3. Teacher train／validation：只用 train 更新參數，依 paired validation 選 checkpoint；確認 60-class text alignment 與 error profile，再 freeze 並建立 train logits cache。
+3. Teacher train／validation：只用 train 更新參數，依 paired validation 選 checkpoint；確認 59-class text alignment 與 error profile，再 freeze 並建立 train logits cache。
 4. Student integration smoke：混合 paired／unpaired batch 完成 CE+KL backward、空配對 batch、checkpoint round trip；確認 teacher 無 gradient，student 僅 LoRA／head 可訓練。
 5. Controlled experiments：相同 split／seed／recipe／training budget 的 CE-only 與 CE+KD；只以完整 RGB validation 選 T／λ 及 checkpoint，paired validation 僅作診斷。選定方案後才對該方案做一次 RGB-only test。
-6. 報告：完整 120-class accuracy，另列 A001–A060／A061–A120、paired／unpaired subgroup accuracy、macro-F1、樣本數及 training cost；任何新增 metrics 對 control 同步計算。依預先固定 seeds 比較穩定性，不以 test 選 seed。
+6. 報告：完整 120-class accuracy，另列 A001–A059／A060–A120、paired／unpaired subgroup accuracy、macro-F1、樣本數及 training cost；任何新增 metrics 對 control 同步計算。依預先固定 seeds 比較穩定性，不以 test 選 seed。
 
 只新增保護重要契約的測試：identity／split 防漏、parser 失效樣本、class reorder 對應、teacher-cache invalidation、partial-class KL／無配對 batch、teacher gradient isolation，以及 student checkpoint 的 RGB-only reload／merge parity。沿用既有 LoRA checks；一般測試不下載權重或掃完整資料集。
 

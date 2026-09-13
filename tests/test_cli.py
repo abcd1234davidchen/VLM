@@ -56,6 +56,26 @@ class CLITest(unittest.TestCase):
             prog="vlm embeddings extract",
         )
 
+    def test_skeleton_audit_dispatch(self) -> None:
+        with patch("vlm.cli._invoke") as invoke:
+            cli.main(["data", "skeleton-audit", "--help"])
+
+        invoke.assert_called_once_with(
+            "vlm.skeleton_data",
+            ["--help"],
+            prog="vlm data skeleton-audit",
+        )
+
+    def test_skeleton_gate1_dispatch(self) -> None:
+        with patch("vlm.cli._invoke") as invoke:
+            cli.main(["experiment", "skeleton-gate1", "--help"])
+
+        invoke.assert_called_once_with(
+            "vlm.experiments.skeleton_gate1",
+            ["--help"],
+            prog="vlm experiment skeleton-gate1",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

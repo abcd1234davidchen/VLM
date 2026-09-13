@@ -25,6 +25,10 @@ EXPERIMENT_COMMANDS = {
     "clip": "vlm.experiments.clip_video",
     "xclip": "vlm.experiments.xclip",
     "xclip-vision": "vlm.experiments.xclip_vision",
+    "skeleton-gate1": "vlm.experiments.skeleton_gate1",
+}
+DATA_COMMANDS = {
+    "skeleton-audit": "vlm.skeleton_data",
 }
 
 
@@ -36,7 +40,7 @@ def _root_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("train", "embeddings", "experiment"),
+        choices=("train", "embeddings", "experiment", "data"),
         help="Workflow family to run.",
     )
     return parser
@@ -148,6 +152,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             remaining,
             EXPERIMENT_COMMANDS,
         )
+        return
+    if group == "data":
+        _dispatch_named("data", remaining, DATA_COMMANDS)
         return
     _root_parser().error(f"unknown command: {group}")
 
