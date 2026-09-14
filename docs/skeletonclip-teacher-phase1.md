@@ -1,6 +1,6 @@
 # SkeletonCLIP Phase 1：teacher feasibility 與 backbone selection
 
-日期：2026-09-13。狀態：Gate 0 與 Gate 1 compatibility smoke 已完成；尚未啟動 Gate 2，亦未授權 push code。本文件將 `docs/skeletonclip-distillation-plan.md` 的 teacher feasibility 拆成可執行的第一階段，且不把論文使用的 Hyperformer 視為既定答案。
+日期：2026-09-14。狀態：Gate 0、Gate 1 與 Gate 2 已完成；Gate 2 選出 BlockGCN 作為唯一 Gate 3 finalist，尚未啟動 Gate 3。本文件將 `docs/skeletonclip-distillation-plan.md` 的 teacher feasibility 拆成可執行的第一階段，且不把論文使用的 Hyperformer 視為既定答案。
 
 ## 1. Phase 1 要回答的問題
 
@@ -71,6 +71,17 @@ Gate 0 是 Phase 1 的硬前置。若有效 train 或 validation coverage 與目
 最多兩個 backbone 以 Option A 完整訓練並使用 validation 選 checkpoint；其中勝出者再跑 Option B frozen text-prototype head與 reference text encoder check。完整 run 不承接 short bake-off optimizer state，所有候選從相同 seed policy 重啟，以免 early proxy 帶來不等量訓練。
 
 最終 teacher 不只看 top-1。若 Option B 的 accuracy 略低但 soft target entropy、NLL、ECE與 per-class confusion 更適合 distillation，可選 Option B；如果 Option B 顯著落後，先使用 Option A 做 classifier-KD sanity experiment，並把真正的 language-aligned SkeletonCLIP 延後，而不是為了名稱犧牲 teacher quality。
+
+### Gate 2 執行結果
+
+Gate 2 使用固定 paired train 45,236 筆、paired validation 4,180 筆、A001–A059 class order、64 frames、batch size 16、seeds `{42, 43}` 與每組 20 epochs。四組 run 均從 random initialization 完成，未讀取 test split；完整 machine-readable 結果位於 `artifacts/skeletonclip_gate2/bakeoff_report.json`。
+
+| Backbone | Seed 42 best macro-F1 / accuracy | Seed 43 best macro-F1 / accuracy | Macro-F1 mean ± population stddev | Mean examples/s | Peak allocated VRAM |
+| --- | --- | --- | --- | --- | --- |
+| BlockGCN | 86.57% / 86.56% | 85.76% / 85.81% | 86.17% ± 0.40% | 157.19 | 1.08 GiB |
+| Hyperformer | 76.99% / 77.11% | 68.52% / 68.66% | 72.75% ± 4.23% | 71.77 | 3.39 GiB |
+
+BlockGCN 在兩個 seeds 的最低 macro-F1 仍高於 Hyperformer 兩個 seeds 的最高 macro-F1，同時平均 throughput 約為 2.19 倍且 peak allocated VRAM 較低，因此 Hyperformer 在本 Gate 被明確支配並淘汰。Gate 3 只保留 BlockGCN；Gate 2 的 20-epoch checkpoint 是選型證據，不承接 optimizer state 作為 Gate 3 初始化。
 
 ## 6. 公開 pretrained weights 的使用界線
 

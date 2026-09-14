@@ -256,7 +256,7 @@ def load_skeleton_tensor(path: Path, *, frames: int = 64) -> Tensor:
                         f"{path}: frame {frame_index} body {body_index} has "
                         f"{joint_count} joints; expected 25"
                     )
-                coordinates = torch.empty(3, 25, dtype=torch.float32)
+                coordinate_rows: list[list[float]] = []
                 tracked = 0
                 for joint_index in range(25):
                     joint = _parse_floats(
@@ -269,9 +269,11 @@ def load_skeleton_tensor(path: Path, *, frames: int = 64) -> Tensor:
                         raise SkeletonFormatError(
                             f"{path}: invalid joint tracking state {joint[11]}"
                         )
-                    coordinates[:, joint_index] = torch.tensor(joint[:3])
+                    coordinate_rows.append(joint[:3])
                     tracked += int(joint[11] > 0)
-                bodies[body_id] = coordinates
+                bodies[body_id] = torch.tensor(
+                    coordinate_rows, dtype=torch.float32
+                ).transpose(0, 1)
                 tracked_observations[body_id] += tracked
             sequence.append(bodies)
         if stream.read().strip():
