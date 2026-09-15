@@ -1,6 +1,6 @@
 # SkeletonCLIP Phase 1：teacher feasibility 與 backbone selection
 
-日期：2026-09-14。狀態：Gate 0、Gate 1 與 Gate 2 已完成；Gate 2 選出 BlockGCN 作為唯一 Gate 3 finalist，尚未啟動 Gate 3。本文件將 `docs/skeletonclip-distillation-plan.md` 的 teacher feasibility 拆成可執行的第一階段，且不把論文使用的 Hyperformer 視為既定答案。
+日期：2026-09-14。狀態：Gate 0、Gate 1 與 Gate 2 已完成；Gate 2 選出BlockGCN作為唯一Gate 3 finalist，Gate 3 linear baseline兩個seeds已完成，XCLIP head尚未啟動。本文件將 `docs/skeletonclip-distillation-plan.md` 的 teacher feasibility 拆成可執行的第一階段，且不把論文使用的 Hyperformer 視為既定答案。
 
 ## 1. Phase 1 要回答的問題
 
@@ -71,6 +71,22 @@ Gate 0 是 Phase 1 的硬前置。若有效 train 或 validation coverage 與目
 最多兩個 backbone 以 Option A 完整訓練並使用 validation 選 checkpoint；其中勝出者再跑 Option B frozen text-prototype head與 reference text encoder check。完整 run 不承接 short bake-off optimizer state，所有候選從相同 seed policy 重啟，以免 early proxy 帶來不等量訓練。
 
 最終 teacher 不只看 top-1。若 Option B 的 accuracy 略低但 soft target entropy、NLL、ECE與 per-class confusion 更適合 distillation，可選 Option B；如果 Option B 顯著落後，先使用 Option A 做 classifier-KD sanity experiment，並把真正的 language-aligned SkeletonCLIP 延後，而不是為了名稱犧牲 teacher quality。
+
+2026-09-15在任何XCLIP full-run產生結果前，Gate 3計算策略鎖定為adaptive funnel：linear baseline仍以seeds `{42, 43}` 完整確認；XCLIP text-prototype head先只跑seed 42。若XCLIP seed 42的macro-F1明顯低於依linear baseline計算的2 percentage-point門檻，便停止該路線並選linear teacher；只有結果接近或通過門檻時才補XCLIP seed 43確認穩定性。這項節流不移動quality gate，也不以test或已觀察的XCLIP結果作決策。
+
+OpenAI CLIP `ViT-B/16` reference改為診斷性ablation而非Gate 3必跑項目；只有XCLIP結果異常且需要區分「text alignment本身」與「特定text space」時才執行。省略reference不影響linear與XCLIP head的主要teacher選擇，但最終報告必須明記reference是否執行及原因。
+
+### Gate 3 linear baseline執行結果
+
+Gate 3 linear baseline以BlockGCN、固定paired train 45,236筆、paired validation 4,180筆、64 frames、batch size 16、100 epochs與seeds `{42, 43}` 從random initialization完整訓練；兩組run均完成strict checkpoint reload與validation metric reproduction，未讀取test split。Machine-readable彙整位於 `artifacts/skeletonclip_gate3/teacher_comparison_report.json`。
+
+| Seed | Best epoch | Macro-F1 | Accuracy | NLL | ECE | Examples/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 42 | 100 | 86.51% | 86.56% | 0.6383 | 0.0754 | 126.26 |
+| 43 | 94 | 86.43% | 86.46% | 0.6332 | 0.0729 | 129.12 |
+| Mean ± population stddev | — | 86.47% ± 0.04% | 86.51% ± 0.05% | 0.6358 ± 0.0025 | 0.0741 ± 0.0013 | 127.69 ± 1.43 |
+
+兩個seeds的macro-F1差距僅0.08 percentage points，支持linear teacher quality具高度重現性；兩組peak allocated VRAM皆約1.08 GiB。依預先固定的2 percentage-point quality gate，XCLIP seed 42需達到約84.47% macro-F1，且NLL／ECE條件成立，才值得補跑XCLIP seed 43；明顯低於此門檻便選linear teacher並停止主要head comparison。
 
 ### Gate 2 執行結果
 
@@ -157,11 +173,11 @@ Hyperformer、SkateFormer、HD-GCN 的官方 checkpoint 多半依官方 NTU spli
 
 **預先固定的quality gate：** 在開始完整比較前，以linear head的paired-validation macro-F1為基準。XCLIP text head若落後不超過2個percentage points，且NLL／ECE至少一項更好、另一項沒有明顯惡化，視為保留足夠teacher quality，可優先選language-aligned版本；若落後超過2點，或calibration與soft-target品質同時變差，主要teacher改用linear classifier。這個2點是Phase 1的工程門檻，不宣稱是通用科學定律；它必須在看完整validation結果前鎖定，不能事後移動。
 
-**Reference怎麼保留：** 只在勝出的skeleton backbone上額外跑一次OpenAI CLIP `ViT-B/16` frozen-text reference，用來判斷XCLIP text head表現不佳時，問題是「文字對齊本身不適合」還是「選到不合適的text space」；不為每個backbone與每個prompt做完整組合搜尋。如果OpenAI reference較好，它仍先作ablation結果，除非validation增益足以抵銷引入第二套runtime／provenance contract的成本，才另提變更主要teacher的決策。
+**Reference怎麼保留：** OpenAI CLIP `ViT-B/16` frozen-text reference保留為條件式診斷ablation，用來在XCLIP結果異常時判斷問題是「文字對齊本身不適合」還是「選到不合適的text space」；它不再是Gate 3必跑項目，也不為每個backbone與每個prompt做完整組合搜尋。如果因診斷需要而執行且OpenAI reference較好，它仍先作ablation結果，除非validation增益足以抵銷引入第二套runtime／provenance contract的成本，才另提變更主要teacher的決策。
 
 ## 11. 定案後的 Phase 1 路線
 
-正式路線現為：先完成Gate 0資料audit；再讓BlockGCN與Hyperformer完成joint-only compatibility smoke與short bake-off；用途確認為研究／教育時可加入SkateFormer challenger；所有正式run從random initialization開始；先以linear head找出backbone ceiling；最後在勝出backbone上訓練frozen XCLIP text-prototype head並套用預先固定的quality gate，再只做一次OpenAI CLIP reference check。通過quality gate才把text-aligned版本定為主要SkeletonCLIP teacher，否則第一版distillation使用較強的linear classifier teacher並如實命名。
+正式路線現為：先完成Gate 0資料audit；再讓BlockGCN與Hyperformer完成joint-only compatibility smoke與short bake-off；用途確認為研究／教育時可加入SkateFormer challenger；所有正式run從random initialization開始；先以linear head的兩個seeds找出backbone ceiling；最後在勝出backbone上先訓練frozen XCLIP text-prototype head seed 42並套用預先固定的quality gate。明顯未通過便選linear classifier teacher並結束主要比較；接近或通過才補XCLIP seed 43。OpenAI CLIP reference只在需要診斷text-space差異時執行。通過quality gate才把text-aligned版本定為主要SkeletonCLIP teacher，否則第一版distillation使用較強的linear classifier teacher並如實命名。
 
 第一個 implementation 切片是 Gate 0 data contract，而不是 backbone training；該切片已完成資料 parser、有效性檢查、canonical pairing 與 coverage artifacts，並在 review 後依使用者決策排除 A060，再進入 Gate 1。
 

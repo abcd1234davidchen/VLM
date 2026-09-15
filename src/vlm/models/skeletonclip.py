@@ -215,6 +215,41 @@ class SkeletonLinearTeacher(nn.Module):
         return self.head(self.backbone(batch))
 
 
+class SkeletonPrototypeTeacher(nn.Module):
+    """Skeleton encoder classified against immutable normalized text prototypes."""
+
+    def __init__(
+        self,
+        backbone_name: BackboneName,
+        text_prototypes: Tensor,
+        *,
+        initial_logit_scale: float = 1 / 0.07,
+        maximum_logit_scale: float = 100.0,
+    ) -> None:
+        super().__init__()
+        if text_prototypes.ndim != 2 or text_prototypes.shape[0] != 59:
+            raise ValueError("Text prototypes must have shape [59, embedding_dim]")
+        if not torch.isfinite(text_prototypes).all():
+            raise ValueError("Text prototypes must contain only finite values")
+        if initial_logit_scale <= 0 or maximum_logit_scale <= 0:
+            raise ValueError("Logit scales must be positive")
+        self.backbone_name = backbone_name
+        self.backbone = build_skeleton_backbone(backbone_name)
+        self.projection = nn.Sequential(
+            nn.LayerNorm(self.backbone.output_dim),
+            nn.Linear(self.backbone.output_dim, text_prototypes.shape[1]),
+        )
+        normalized = nn.functional.normalize(text_prototypes.float(), dim=1)
+        self.register_buffer("text_prototypes", normalized)
+        self.log_logit_scale = nn.Parameter(torch.tensor(math.log(initial_logit_scale)))
+        self.maximum_logit_scale = maximum_logit_scale
+
+    def forward(self, batch: Tensor) -> Tensor:
+        features = nn.functional.normalize(self.projection(self.backbone(batch)).float(), dim=1)
+        scale = self.log_logit_scale.exp().clamp(max=self.maximum_logit_scale)
+        return scale * features @ self.text_prototypes.t()
+
+
 @dataclass(frozen=True)
 class SkeletonCheckpointIdentity:
     backbone: BackboneName

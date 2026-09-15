@@ -51,6 +51,13 @@ The missing/incomplete sample list must come from the [NTU RGB+D authors' reposi
 
 `vlm experiment skeleton-gate1` runs CPU contract checks and then sequential single-GPU compatibility smoke for the BlockGCN and Hyperformer adapters. It uses 16 real paired training samples, requires at least 95% overfit accuracy, enforces finite loss/gradients, verifies strict checkpoint reload and eval parity, records throughput and peak VRAM, and writes `artifacts/skeletonclip_gate1/compatibility_report.json`. It does not start the Gate 2 bake-off.
 
+Gate 3 uses an adaptive full-run funnel. Complete the BlockGCN linear baseline with seeds 42 and 43, then run the frozen XCLIP text-prototype head with seed 42 first. Run XCLIP seed 43 only when seed 42 is within the predeclared 2 percentage-point macro-F1 quality gate; the OpenAI CLIP reference is a conditional diagnostic rather than a required run. This policy was locked before any XCLIP full-run result was observed. Example commands:
+
+```bash
+uv run vlm train skeleton-gate3 --heads linear --seeds 42 43
+uv run vlm train skeleton-gate3 --heads xclip --seeds 42
+```
+
 `xclip-lora` trains project-owned LoRA adapters on the XCLIP MIT q/v attention projections plus a new classification head. `uv run vlm embeddings extract --pipeline xclip-lora` builds only the isolated pre-MIT cache, while `uv run vlm train xclip-lora` performs cache preparation and CE-only training.
 
 XCLIP cache extraction can overlap CPU video decoding with batched GPU inference. For an 11 GB GPU, start with:

@@ -86,6 +86,16 @@ class CLITest(unittest.TestCase):
             prog="vlm train skeleton-gate2",
         )
 
+    def test_skeleton_gate3_dispatch(self) -> None:
+        with patch("vlm.cli._invoke") as invoke:
+            cli.main(["train", "skeleton-gate3", "--help"])
+
+        invoke.assert_called_once_with(
+            "vlm.training.skeletonclip_gate3",
+            ["--help"],
+            prog="vlm train skeleton-gate3",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

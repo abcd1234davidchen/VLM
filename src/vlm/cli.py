@@ -16,6 +16,7 @@ TRAIN_COMMANDS = {
     "xclip-lora": "vlm.training.xclip_lora",
     "xclip-lora-tune": "vlm.training.xclip_lora_tune",
     "skeleton-gate2": "vlm.training.skeletonclip",
+    "skeleton-gate3": "vlm.training.skeletonclip_gate3",
 }
 EMBEDDING_COMMANDS = {
     name: module

@@ -1,6 +1,7 @@
 import json
 
 from vlm.training.skeletonclip import _write_bakeoff_report
+from vlm.training.skeletonclip_gate3 import select_teacher
 
 
 def _result(backbone: str, seed: int, macro_f1: float, speed: float) -> dict[str, object]:
@@ -38,3 +39,15 @@ def test_bakeoff_report_aggregates_separate_runs_and_eliminates_dominated_backbo
     assert report["finalists"] == ["blockgcn"]
     assert json.loads((tmp_path / "summary.json").read_text()) == report
     assert json.loads((tmp_path / "bakeoff_report.json").read_text()) == report
+
+
+def _gate3_result(macro_f1: float, nll: float, ece: float) -> dict[str, object]:
+    return {"best_validation": {"macro_f1": macro_f1, "nll": nll, "ece": ece}}
+
+
+def test_gate3_selects_xclip_only_when_locked_quality_rule_passes() -> None:
+    linear = _gate3_result(0.90, 0.50, 0.08)
+    passing_xclip = _gate3_result(0.885, 0.49, 0.08)
+    failing_xclip = _gate3_result(0.879, 0.45, 0.07)
+    assert select_teacher(linear, passing_xclip)["selected_head"] == "xclip"
+    assert select_teacher(linear, failing_xclip)["selected_head"] == "linear"

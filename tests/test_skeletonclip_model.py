@@ -10,6 +10,7 @@ from vlm.models.skeletonclip import (
     BLOCKGCN_SOURCE_REVISION,
     SkeletonCheckpointIdentity,
     SkeletonLinearTeacher,
+    SkeletonPrototypeTeacher,
     load_skeleton_checkpoint_strict,
     save_skeleton_checkpoint,
 )
@@ -54,6 +55,16 @@ class SkeletonCLIPModelTest(unittest.TestCase):
         batch[0, 0, 0, 0, 0] = float("nan")
         with self.assertRaisesRegex(ValueError, "finite"):
             model(batch)
+
+    def test_prototype_head_normalizes_fixed_prototypes_and_clamps_scale(self) -> None:
+        model = SkeletonPrototypeTeacher("blockgcn", torch.randn(59, 32), initial_logit_scale=200.0)
+        self.assertFalse(model.text_prototypes.requires_grad)
+        torch.testing.assert_close(model.text_prototypes.norm(dim=1), torch.ones(59))
+        model.eval()
+        with torch.no_grad():
+            logits = model(torch.randn(2, 3, 8, 25, 2))
+        self.assertEqual(logits.shape, (2, 59))
+        self.assertLessEqual(float(logits.abs().max()), 100.0001)
 
 
 if __name__ == "__main__":
