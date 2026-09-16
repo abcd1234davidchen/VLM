@@ -7,6 +7,7 @@ import json
 import math
 import platform
 import subprocess
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -37,6 +38,13 @@ from vlm.models.lora import (
     unmerge_lora,
 )
 from vlm.reporting import save_accuracy_plot, save_checkpoint, write_json
+from vlm.skeleton_teacher_cache import (
+    DistillationAccumulator,
+    DistillationDataset,
+    TeacherLogitCache,
+    sha256_file,
+    validate_class_mapping,
+)
 from vlm.training.engine import ValidationCheckpoint, resolve_device, set_seed
 from vlm.xclip_features import FRAME_SAMPLING_STRATEGY
 from vlm.xclip_pre_mit_features import (
@@ -160,6 +168,92 @@ def train_xclip_lora_epoch(
     return total_loss / len(loader.dataset)
 
 
+def train_xclip_lora_distillation_epoch(
+    model: XCLIPMITLoRAClassifier,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    *,
+    class_indices: torch.Tensor,
+    temperature: float,
+    kd_weight: float,
+    label_smoothing: float,
+    max_grad_norm: float,
+    gradient_accumulation_steps: int,
+    amp_enabled: bool,
+    amp_dtype: torch.dtype | None,
+) -> dict[str, float]:
+    """Train one epoch with exact sample-normalized CE and paired-normalized KD."""
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    scaler = torch.amp.GradScaler(
+        "cuda", enabled=amp_enabled and amp_dtype == torch.float16
+    )
+    totals = {"ce": 0.0, "kd": 0.0, "weighted_kd": 0.0, "total": 0.0}
+    total_samples = paired_samples = optimizer_steps = 0
+    accumulator = DistillationAccumulator()
+    for batch_index, (features, labels, _sample_ids, teacher_logits, paired_mask) in enumerate(loader, start=1):
+        features, labels = features.to(device), labels.to(device)
+        with torch.autocast(
+            device_type=device.type, dtype=amp_dtype, enabled=amp_enabled
+        ):
+            logits = model(features)
+        accumulator.add(
+            logits,
+            labels,
+            teacher_logits.to(device),
+            paired_mask.to(device),
+            class_indices.to(device),
+            temperature=temperature,
+            label_smoothing=label_smoothing,
+        )
+        should_step = (
+            batch_index % gradient_accumulation_steps == 0
+            or batch_index == len(loader)
+        )
+        if not should_step:
+            continue
+        ce, kd, loss = accumulator.losses(kd_weight=kd_weight)
+        if not all(torch.isfinite(value) for value in (ce, kd, loss)):
+            raise RuntimeError("Non-finite CE/KD/total loss in distillation epoch")
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        if any(
+            parameter.grad is not None
+            and not torch.isfinite(parameter.grad).all()
+            for parameter in model.parameters()
+        ):
+            raise RuntimeError("Non-finite gradient in distillation epoch")
+        clip_grad_norm_(
+            [parameter for parameter in model.parameters() if parameter.requires_grad],
+            max_grad_norm,
+        )
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+        optimizer_steps += 1
+        totals["ce"] += float(ce.detach()) * accumulator.total_count
+        totals["kd"] += float(kd.detach()) * accumulator.paired_count
+        totals["weighted_kd"] += (
+            float((kd_weight * kd).detach()) * accumulator.paired_count
+        )
+        totals["total"] += float(loss.detach()) * accumulator.total_count
+        total_samples += accumulator.total_count
+        paired_samples += accumulator.paired_count
+        accumulator = DistillationAccumulator()
+    return {
+        "ce_loss": totals["ce"] / total_samples,
+        "kd_loss": totals["kd"] / paired_samples if paired_samples else 0.0,
+        "weighted_kd_loss": totals["weighted_kd"] / paired_samples if paired_samples else 0.0,
+        "total_loss": totals["ce"] / total_samples
+        + (totals["weighted_kd"] / paired_samples if paired_samples else 0.0),
+        "total_samples": float(total_samples),
+        "paired_samples": float(paired_samples),
+        "paired_fraction": paired_samples / total_samples,
+        "optimizer_steps": float(optimizer_steps),
+    }
+
+
 class TrainingFeatureAugmentationDataset(Dataset):
     """Apply stochastic, cache-safe augmentation after loading a feature."""
 
@@ -230,6 +324,74 @@ def _scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
+def _macro_f1_from_predictions(
+    predictions: Sequence[dict[str, object]], num_classes: int
+) -> float:
+    confusion = torch.zeros(num_classes, num_classes, dtype=torch.long)
+    for row in predictions:
+        confusion[int(row["true_class_index"]), int(row["predicted_class_index"])] += 1
+    scores = []
+    for index in range(num_classes):
+        true_positive = int(confusion[index, index])
+        false_positive = int(confusion[:, index].sum()) - true_positive
+        false_negative = int(confusion[index, :].sum()) - true_positive
+        denominator = 2 * true_positive + false_positive + false_negative
+        scores.append(2 * true_positive / denominator if denominator else 0.0)
+    return sum(scores) / num_classes
+
+
+def _evaluate_validation_detailed(
+    model: nn.Module,
+    loader: DataLoader,
+    samples: Sequence[CachedXCLIPPreMITFeature],
+    device: torch.device,
+    class_ids: Sequence[int],
+) -> tuple[dict[str, float], list[dict[str, object]], torch.Tensor, torch.Tensor]:
+    model.eval()
+    logits_rows, label_rows = [], []
+    with torch.inference_mode():
+        for features, labels in loader:
+            logits_rows.append(model(features.to(device)).float().cpu())
+            label_rows.append(labels.long().cpu())
+    logits, labels = torch.cat(logits_rows), torch.cat(label_rows)
+    probabilities = logits.softmax(dim=1)
+    predicted = logits.argmax(dim=1)
+    predictions = []
+    for sample, truth, prediction in zip(samples, labels.tolist(), predicted.tolist()):
+        predictions.append(
+            {
+                "video": sample.video_path.name,
+                "true_class_id": sample.class_id,
+                "predicted_class_id": class_ids[prediction],
+                "true_class_index": truth,
+                "predicted_class_index": prediction,
+            }
+        )
+    confidence = probabilities.max(dim=1).values
+    correct = predicted.eq(labels)
+    ece = 0.0
+    for lower in torch.arange(0, 1, 0.1):
+        mask = (confidence > lower) & (confidence <= lower + 0.1)
+        if mask.any():
+            ece += float(mask.float().mean()) * abs(
+                float(correct[mask].float().mean()) - float(confidence[mask].mean())
+            )
+    metrics = {
+        "accuracy": float(correct.float().mean()),
+        "macro_f1": _macro_f1_from_predictions(predictions, len(class_ids)),
+        "nll": float(nn.functional.cross_entropy(logits, labels)),
+        "ece": ece,
+    }
+    return metrics, predictions, logits, labels
+
+
+def _append_training_log(path: Path, message: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(message + "\n")
+        stream.flush()
+
+
 def build_cached_datasets(
     cached: dict[str, list[CachedXCLIPPreMITFeature]],
     *,
@@ -252,6 +414,11 @@ def run_pipeline(
     print_results: bool = True,
     print_run_details: bool = True,
 ) -> dict[str, object]:
+    if args.teacher_cache and evaluate_test:
+        raise ValueError(
+            "Distillation runs are under the Phase 2 test embargo; "
+            "pass --no-evaluate-test until the locked Gate 5 test-once command."
+        )
     if args.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
     if args.epochs < 1:
@@ -307,10 +474,25 @@ def run_pipeline(
         raise ValueError(
             f"No supported class-labelled videos found in {videos_dir}"
         )
-    split = (
-        select_split_classes(loaded_split, class_ids)
-        if loaded_split is not None
-        else build_split(
+    if loaded_split is not None and not evaluate_test:
+        split = {
+            name: [sample for sample in samples if sample.class_id in class_ids]
+            for name, samples in loaded_split.items()
+        }
+        missing = {
+            name: sorted(set(class_ids) - {sample.class_id for sample in split[name]})
+            for name in ("train", "val")
+        }
+        if any(missing.values()):
+            raise ValueError(
+                "Validation-only split does not contain every requested class "
+                f"in train and val: {missing}"
+            )
+    else:
+        split = (
+            select_split_classes(loaded_split, class_ids)
+            if loaded_split is not None
+            else build_split(
             videos_dir=videos_dir,
             class_ids=class_ids,
             videos_per_split=args.videos_per_split,
@@ -318,8 +500,8 @@ def run_pipeline(
             max_videos_per_class=args.max_videos_per_class,
             val_fraction=args.val_fraction,
             test_fraction=args.test_fraction,
+            )
         )
-    )
     split_summary = {
         name: summarize_split_samples(samples)
         for name, samples in split.items()
@@ -339,10 +521,15 @@ def run_pipeline(
         source_manifest=source_manifest,
     )
     device = resolve_device(args.device)
+    active_split = (
+        split
+        if evaluate_test
+        else {name: split[name] for name in ("train", "val")}
+    )
     cached = prepared_cached
     if cached is None:
         cached = extract_or_load_xclip_pre_mit_features(
-            split,
+            active_split,
             cache_dir=cache_dir,
             model_name=args.model_name,
             num_frames=args.frames,
@@ -353,7 +540,14 @@ def run_pipeline(
             read_only=cache_read_only,
             show_progress=args.cache_progress,
         )
-    expected_counts = {name: len(samples) for name, samples in split.items()}
+    else:
+        cached = {
+            name: cached[name]
+            for name in active_split
+        }
+    expected_counts = {
+        name: len(samples) for name, samples in active_split.items()
+    }
     actual_counts = {name: len(samples) for name, samples in cached.items()}
     if actual_counts != expected_counts:
         raise ValueError(
@@ -363,7 +557,7 @@ def run_pipeline(
         "device": str(device),
         "train_samples": len(cached["train"]),
         "val_samples": len(cached["val"]),
-        "test_samples": len(cached["test"]),
+        "test_samples": len(cached.get("test", [])),
         "model_name": args.model_name,
         "frame_sampling_strategy": FRAME_SAMPLING_STRATEGY,
         "feature_stage": FEATURE_STAGE,
@@ -397,6 +591,30 @@ def run_pipeline(
         temporal_jitter=args.temporal_jitter,
         feature_noise_std=args.feature_noise_std,
     )
+    teacher_provenance = None
+    if args.teacher_cache:
+        validation = json.loads(
+            Path(args.teacher_cache_validation).read_text(encoding="utf-8")
+        )
+        if validation.get("status") != "passed":
+            raise ValueError("Teacher cache validation report is not passed")
+        if validation.get("cache_path") != str(args.teacher_cache) or validation.get(
+            "cache_sha256"
+        ) != sha256_file(Path(args.teacher_cache)):
+            raise ValueError("Teacher cache path/hash does not match its validation report")
+        teacher_cache = TeacherLogitCache(
+            Path(args.teacher_cache),
+            expected_identity=validation["cache_identity"],
+        )
+        train_dataset = DistillationDataset(train_dataset, cached["train"], teacher_cache)
+        mapping_payload = json.loads(
+            Path(args.class_mapping).read_text(encoding="utf-8")
+        )
+        class_indices = validate_class_mapping(mapping_payload)
+        teacher_provenance = {
+            "cache_identity": validation["cache_identity"],
+            "class_mapping_sha256": mapping_payload["mapping_sha256"],
+        }
     val_dataset = datasets["val"]
     train_loader = DataLoader(train_dataset, shuffle=True, **loader_options)
     train_eval_loader = DataLoader(
@@ -462,22 +680,72 @@ def run_pipeline(
     )
 
     history: list[dict[str, float | None]] = []
+    training_started = time.perf_counter()
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     best_checkpoint = ValidationCheckpoint()
     epochs_without_improvement = 0
-    for epoch in range(1, args.epochs + 1):
-        loss = train_xclip_lora_epoch(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            device,
-            max_grad_norm=args.max_grad_norm,
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            amp_enabled=amp_enabled,
-            amp_dtype=amp_dtype,
-            epoch=epoch,
-            show_batch_progress=args.batch_progress,
+    start_epoch = 1
+    last_checkpoint_path = artifacts_dir / "last_checkpoint.pt"
+    training_identity = {
+        "schema_version": 1,
+        "arguments": {
+            key: value
+            for key, value in vars(args).items()
+            if key not in {"resume_training", "batch_progress", "cache_progress", "epoch_log_frequency"}
+        },
+        "class_ids": class_ids,
+        "split_manifest_sha256": (
+            sha256_file(source_manifest) if source_manifest is not None else None
+        ),
+        "teacher_provenance": teacher_provenance,
+    }
+    if args.resume_training and last_checkpoint_path.exists():
+        resumed = torch.load(last_checkpoint_path, map_location=device, weights_only=False)
+        if resumed.get("identity") != training_identity:
+            raise ValueError("Resume checkpoint identity differs from this training run")
+        model.load_state_dict(resumed["model_state_dict"], strict=True)
+        optimizer.load_state_dict(resumed["optimizer_state_dict"])
+        scheduler.load_state_dict(resumed["scheduler_state_dict"])
+        history = resumed["history"]
+        best_checkpoint = ValidationCheckpoint(
+            epoch=int(resumed["best_epoch"]),
+            score=tuple(resumed["best_score"]),
+            state_dict=resumed["best_state_dict"],
         )
+        epochs_without_improvement = int(resumed["epochs_without_improvement"])
+        torch.set_rng_state(resumed["torch_rng_state"].cpu())
+        if device.type == "cuda":
+            torch.cuda.set_rng_state_all(
+                [state.cpu() for state in resumed["cuda_rng_states"]]
+            )
+        start_epoch = int(resumed["epoch"]) + 1
+        _append_training_log(
+            artifacts_dir / "train.log",
+            f"resume epoch={start_epoch} completed_epochs={len(history)}",
+        )
+    elif args.resume_training:
+        _append_training_log(
+            artifacts_dir / "train.log", "resume requested; no checkpoint found; starting epoch=1"
+        )
+    for epoch in range(start_epoch, args.epochs + 1):
+        distillation_metrics = None
+        if args.teacher_cache:
+            distillation_metrics = train_xclip_lora_distillation_epoch(
+                model, train_loader, optimizer, device, class_indices=class_indices,
+                temperature=args.kd_temperature, kd_weight=args.kd_weight,
+                label_smoothing=args.label_smoothing, max_grad_norm=args.max_grad_norm,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+                amp_enabled=amp_enabled, amp_dtype=amp_dtype,
+            )
+            loss = distillation_metrics["total_loss"]
+        else:
+            loss = train_xclip_lora_epoch(
+                model, train_loader, optimizer, criterion, device,
+                max_grad_norm=args.max_grad_norm, gradient_accumulation_steps=args.gradient_accumulation_steps,
+                amp_enabled=amp_enabled, amp_dtype=amp_dtype, epoch=epoch,
+                show_batch_progress=args.batch_progress,
+            )
         val_accuracy, _ = evaluate_features(
             model,
             val_loader,
@@ -519,8 +787,50 @@ def run_pipeline(
                 "train_loss": loss,
                 "train_accuracy": train_accuracy,
                 "val_accuracy": val_accuracy,
+                **(distillation_metrics or {}),
             }
         )
+        progress = {
+            "state": "running",
+            "identity": training_identity,
+            "completed_epoch": epoch,
+            "total_epochs": args.epochs,
+            "best_epoch": best_checkpoint.epoch,
+            "best_validation_accuracy": (
+                best_checkpoint.score[0] if best_checkpoint.score else None
+            ),
+            "latest": history[-1],
+            "test_evaluated": False,
+        }
+        write_json(artifacts_dir / "progress.json", progress)
+        log_line = (
+            f"epoch={epoch:02d} train_loss={loss:.6f} "
+            f"train_accuracy={train_accuracy if train_accuracy is not None else 'n/a'} "
+            f"val_accuracy={val_accuracy:.6f} "
+            f"ce={distillation_metrics['ce_loss'] if distillation_metrics else loss:.6f} "
+            f"kd={distillation_metrics['kd_loss'] if distillation_metrics else 0.0:.6f} "
+            f"paired={int(distillation_metrics['paired_samples']) if distillation_metrics else 0}"
+        )
+        _append_training_log(artifacts_dir / "train.log", log_line)
+        checkpoint_payload = {
+            "identity": training_identity,
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "history": history,
+            "best_epoch": best_checkpoint.epoch,
+            "best_score": best_checkpoint.score,
+            "best_state_dict": best_checkpoint.state_dict,
+            "epochs_without_improvement": epochs_without_improvement,
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_states": (
+                torch.cuda.get_rng_state_all() if device.type == "cuda" else []
+            ),
+        }
+        temporary_checkpoint = last_checkpoint_path.with_suffix(".pt.tmp")
+        torch.save(checkpoint_payload, temporary_checkpoint)
+        temporary_checkpoint.replace(last_checkpoint_path)
         train_accuracy_text = (
             f"{train_accuracy:.4f}"
             if train_accuracy is not None
@@ -546,13 +856,12 @@ def run_pipeline(
             break
 
     best_checkpoint.restore(model)
-    validation_accuracy, _ = evaluate_features(
-        model,
-        val_loader,
-        cached["val"],
-        device,
-        class_ids,
+    validation_metrics, validation_predictions, validation_logits, validation_labels = (
+        _evaluate_validation_detailed(
+            model, val_loader, cached["val"], device, class_ids
+        )
     )
+    validation_accuracy = validation_metrics["accuracy"]
     final_accuracy: float | None = None
     predictions: list[dict[str, object]] | None = None
     if evaluate_test:
@@ -578,6 +887,7 @@ def run_pipeline(
             "target_modules": model.target_modules,
             "best_epoch": best_checkpoint.epoch,
             "validation_accuracy": validation_accuracy,
+            "teacher_provenance": teacher_provenance,
         },
     )
     parity_features, _ = next(iter(val_loader))
@@ -612,6 +922,7 @@ def run_pipeline(
             "config": config,
             "best_epoch": best_checkpoint.epoch,
             "validation_accuracy": validation_accuracy,
+            "teacher_provenance": teacher_provenance,
             "merge_parity_max_absolute_error": parity_error,
         },
     )
@@ -634,6 +945,10 @@ def run_pipeline(
         "history": history,
         "best_epoch": best_checkpoint.epoch,
         "validation_accuracy": validation_accuracy,
+        "validation_macro_f1": validation_metrics["macro_f1"],
+        "validation_nll": validation_metrics["nll"],
+        "validation_ece": validation_metrics["ece"],
+        "validation_predictions": validation_predictions,
         "test_evaluated": evaluate_test,
         "trainable_parameter_audit": audit_payload,
         "adapter_checkpoint_path": str(adapter_path),
@@ -642,12 +957,41 @@ def run_pipeline(
         "amp_dtype": run_config["amp_dtype"],
         "micro_batch_size": args.batch_size,
         "effective_batch_size": effective_batch_size,
+        "training_elapsed_seconds": time.perf_counter() - training_started,
+        "peak_memory_allocated_bytes": (
+            torch.cuda.max_memory_allocated(device)
+            if device.type == "cuda"
+            else 0
+        ),
     }
     if evaluate_test:
         results["final_test_accuracy"] = final_accuracy
         results["predictions"] = predictions
     write_json(artifacts_dir / "run_config.json", run_config)
     write_json(artifacts_dir / "evaluation_results.json", results)
+    write_json(
+        artifacts_dir / "validation_predictions.json",
+        validation_predictions,
+    )
+    torch.save(
+        {
+            "sample_ids": [sample.video_path.stem.removesuffix("_rgb") for sample in cached["val"]],
+            "labels": validation_labels,
+            "logits": validation_logits,
+        },
+        artifacts_dir / "validation_logits.pt",
+    )
+    write_json(
+        artifacts_dir / "progress.json",
+        {
+            "state": "completed",
+            "completed_epoch": len(history),
+            "total_epochs": args.epochs,
+            "best_epoch": best_checkpoint.epoch,
+            "best_validation_accuracy": validation_accuracy,
+            "test_evaluated": evaluate_test,
+        },
+    )
     save_accuracy_plot(
         history,
         artifacts_dir / "accuracy_graph.png",
@@ -729,6 +1073,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame-dropout", type=float, default=0.0)
     parser.add_argument("--temporal-jitter", type=int, default=0)
     parser.add_argument("--feature-noise-std", type=float, default=0.0)
+    parser.add_argument("--teacher-cache", default=None)
+    parser.add_argument(
+        "--teacher-cache-validation",
+        default="artifacts/skeletonclip_phase2/cache_validation.json",
+    )
+    parser.add_argument(
+        "--class-mapping",
+        default="artifacts/skeletonclip_phase2/class_mapping.json",
+    )
+    parser.add_argument("--kd-temperature", type=float, default=2.0)
+    parser.add_argument("--kd-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--evaluate-test",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument(
         "--amp",
         action=argparse.BooleanOptionalAction,
@@ -738,6 +1098,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--extract-only", action="store_true")
     parser.add_argument("--force-extract", action="store_true")
+    parser.add_argument(
+        "--resume-training",
+        dest="resume_training",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
     parser.add_argument("--class-ids", type=int, nargs="+", default=None)
     limits = parser.add_mutually_exclusive_group()
     limits.add_argument("--max-videos-per-class", type=int, default=None)
@@ -769,7 +1135,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    run_pipeline(parse_args(argv))
+    args = parse_args(argv)
+    run_pipeline(args, evaluate_test=args.evaluate_test)
 
 
 if __name__ == "__main__":

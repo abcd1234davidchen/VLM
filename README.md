@@ -60,6 +60,10 @@ uv run vlm train skeleton-gate3 --heads xclip --seeds 42
 
 Gate 3 is complete. The two-seed linear and XCLIP heads reached 86.47% and 86.16% mean validation macro-F1 respectively. XCLIP improved ECE from 0.0741 to 0.0596 but worsened NLL from 0.6358 to 0.6523, so it did not pass the predeclared rule requiring one calibration metric to improve without worsening the other. The selected first-pass distillation teacher is the BlockGCN linear seed-42 best checkpoint; XCLIP prototypes remain an independent semantic-alignment result. The next phase freezes that teacher, caches raw 59-class logits for valid paired training samples, and integrates explicit A001–A059 masked KL into the existing 120-class XCLIP MIT LoRA student.
 
+Phase 2 Gates 0–2 are complete. Revalidate the immutable experiment lock, the 45,236-entry FP32 teacher-logit cache, and the masked-KL integration smoke with `uv run vlm train skeleton-phase2 --through-gate 2 --batch-size 64 --workers 4`. This command does not evaluate the test split. Gate 3 CE parity and Gate 4 validation-only search are also complete; see `docs/skeletonclip-distillation-phase2.md` for the locked contract and exact results.
+
+Phase 2 Gate 3 subsequently passed CE parity at 52.1065% validation accuracy (`-0.0154` percentage points versus the historical seed-42 control). Gate 4 completed the locked nine-candidate validation-only KD search with a no-go result: the best candidate (`T=1, λ=0.1`) reached 51.9907%, below control by 0.1157 points. No test evaluation was performed and no seed-43 confirmation is planned for this first class-logit KD branch. See the Phase 2 document and `artifacts/skeletonclip_phase2/search_summary.json` for complete results.
+
 `xclip-lora` trains project-owned LoRA adapters on the XCLIP MIT q/v attention projections plus a new classification head. `uv run vlm embeddings extract --pipeline xclip-lora` builds only the isolated pre-MIT cache, while `uv run vlm train xclip-lora` performs cache preparation and CE-only training.
 
 XCLIP cache extraction can overlap CPU video decoding with batched GPU inference. For an 11 GB GPU, start with:

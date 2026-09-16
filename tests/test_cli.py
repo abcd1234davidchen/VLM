@@ -86,6 +86,33 @@ class CLITest(unittest.TestCase):
             prog="vlm train skeleton-gate2",
         )
 
+    def test_skeleton_phase2_dispatch(self) -> None:
+        with patch("vlm.cli._invoke") as invoke:
+            cli.main(["train", "skeleton-phase2", "--help"])
+        invoke.assert_called_once_with(
+            "vlm.training.skeletonclip_phase2",
+            ["--help"],
+            prog="vlm train skeleton-phase2",
+        )
+
+    def test_skeleton_phase2_gate3_dispatch(self) -> None:
+        with patch("vlm.cli._invoke") as invoke:
+            cli.main(["train", "skeleton-phase2-gate3", "--help"])
+        invoke.assert_called_once_with(
+            "vlm.training.skeletonclip_phase2_gate3",
+            ["--help"],
+            prog="vlm train skeleton-phase2-gate3",
+        )
+
+    def test_skeleton_phase2_gate4_dispatch(self) -> None:
+        with patch("vlm.cli._invoke") as invoke:
+            cli.main(["train", "skeleton-phase2-gate4", "--help"])
+        invoke.assert_called_once_with(
+            "vlm.training.skeletonclip_phase2_gate4",
+            ["--help"],
+            prog="vlm train skeleton-phase2-gate4",
+        )
+
     def test_skeleton_gate3_dispatch(self) -> None:
         with patch("vlm.cli._invoke") as invoke:
             cli.main(["train", "skeleton-gate3", "--help"])

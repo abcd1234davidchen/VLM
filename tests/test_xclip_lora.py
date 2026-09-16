@@ -4,6 +4,7 @@ import unittest
 
 import torch
 from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
 
 from vlm.models import XCLIPMITClassifier
 from vlm.models.lora import (
@@ -16,7 +17,11 @@ from vlm.models.lora import (
     merged_base_state_dict,
     unmerge_lora,
 )
-from vlm.training.xclip_lora import TrainingFeatureAugmentationDataset
+from vlm.training.xclip_lora import (
+    TrainingFeatureAugmentationDataset,
+    train_xclip_lora_distillation_epoch,
+    train_xclip_lora_epoch,
+)
 
 
 class Attention(nn.Module):
@@ -57,6 +62,53 @@ class XCLIPStub(nn.Module):
 
 
 class XCLIPLoRATest(unittest.TestCase):
+    def test_zero_weight_distillation_matches_ce_update(self) -> None:
+        torch.manual_seed(12)
+        features = torch.randn(6, 4)
+        labels = torch.tensor([0, 1, 2, 3, 4, 5])
+        teacher = torch.randn(6, 59)
+        paired = torch.tensor([1, 0, 1, 0, 1, 0], dtype=torch.bool)
+        sample_ids = tuple(f"sample-{index}" for index in range(6))
+        ce_loader = DataLoader(TensorDataset(features, labels), batch_size=6)
+        kd_loader = DataLoader(
+            list(zip(features, labels, sample_ids, teacher, paired)),
+            batch_size=6,
+        )
+        ce_model = nn.Linear(4, 120)
+        kd_model = nn.Linear(4, 120)
+        kd_model.load_state_dict(ce_model.state_dict())
+        ce_optimizer = torch.optim.SGD(ce_model.parameters(), lr=0.01)
+        kd_optimizer = torch.optim.SGD(kd_model.parameters(), lr=0.01)
+        train_xclip_lora_epoch(
+            ce_model,
+            ce_loader,
+            ce_optimizer,
+            nn.CrossEntropyLoss(label_smoothing=0.05),
+            torch.device("cpu"),
+            max_grad_norm=100,
+            gradient_accumulation_steps=1,
+            amp_enabled=False,
+            amp_dtype=None,
+            epoch=1,
+            show_batch_progress=False,
+        )
+        train_xclip_lora_distillation_epoch(
+            kd_model,
+            kd_loader,
+            kd_optimizer,
+            torch.device("cpu"),
+            class_indices=torch.arange(59),
+            temperature=2,
+            kd_weight=0,
+            label_smoothing=0.05,
+            max_grad_norm=100,
+            gradient_accumulation_steps=1,
+            amp_enabled=False,
+            amp_dtype=None,
+        )
+        for expected, actual in zip(ce_model.parameters(), kd_model.parameters()):
+            self.assertTrue(torch.equal(expected, actual))
+
     def test_feature_augmentation_does_not_mutate_canonical_tensor(self) -> None:
         class Dataset:
             feature = torch.ones(8, 4)
