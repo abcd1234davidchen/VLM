@@ -168,9 +168,9 @@ def train_run(*, head: str, seed: int, datasets: dict[str, CachedSkeletonDataset
         model.load_state_dict(checkpoint["state_dict"], strict=True)
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
-        generator.set_state(checkpoint["data_generator_state"])
+        generator.set_state(checkpoint["data_generator_state"].cpu())
         torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
-        torch.cuda.set_rng_state_all(checkpoint["cuda_rng_states"])
+        torch.cuda.set_rng_state_all([state.cpu() for state in checkpoint["cuda_rng_states"]])
         history = checkpoint["history"]
         start_epoch = int(checkpoint["epoch"]) + 1
         if history:

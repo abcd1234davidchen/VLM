@@ -1,6 +1,6 @@
 # SkeletonCLIP Phase 1：teacher feasibility 與 backbone selection
 
-日期：2026-09-14。狀態：Gate 0、Gate 1 與 Gate 2 已完成；Gate 2 選出BlockGCN作為唯一Gate 3 finalist，Gate 3 linear baseline兩個seeds已完成，XCLIP head尚未啟動。本文件將 `docs/skeletonclip-distillation-plan.md` 的 teacher feasibility 拆成可執行的第一階段，且不把論文使用的 Hyperformer 視為既定答案。
+日期：2026-09-16。狀態：Phase 1 Gate 0–3已完成；Gate 2選出BlockGCN，Gate 3依預先固定的quality gate選出BlockGCN linear classifier作為第一版distillation teacher，XCLIP text-prototype head保留為semantic-alignment結果而非主要class-logit teacher。本文件將 `docs/skeletonclip-distillation-plan.md` 的teacher feasibility拆成可執行的第一階段，且不把論文使用的Hyperformer視為既定答案。
 
 ## 1. Phase 1 要回答的問題
 
@@ -86,7 +86,24 @@ Gate 3 linear baseline以BlockGCN、固定paired train 45,236筆、paired valida
 | 43 | 94 | 86.43% | 86.46% | 0.6332 | 0.0729 | 129.12 |
 | Mean ± population stddev | — | 86.47% ± 0.04% | 86.51% ± 0.05% | 0.6358 ± 0.0025 | 0.0741 ± 0.0013 | 127.69 ± 1.43 |
 
-兩個seeds的macro-F1差距僅0.08 percentage points，支持linear teacher quality具高度重現性；兩組peak allocated VRAM皆約1.08 GiB。依預先固定的2 percentage-point quality gate，XCLIP seed 42需達到約84.47% macro-F1，且NLL／ECE條件成立，才值得補跑XCLIP seed 43；明顯低於此門檻便選linear teacher並停止主要head comparison。
+兩個seeds的macro-F1差距僅0.08 percentage points，支持linear teacher quality具高度重現性；兩組peak allocated VRAM皆約1.08 GiB。依預先固定的2 percentage-point quality gate，XCLIP seed 42需接近或達到約84.47% macro-F1才值得補跑XCLIP seed 43；最終選擇再對兩個seeds的aggregate套用NLL／ECE條件。
+
+### Gate 3 XCLIP結果與最終決策
+
+XCLIP text-prototype head使用相同BlockGCN、資料、64 frames、batch size 16、100 epochs與seeds `{42, 43}`，text tower固定為revision `a2e27a78a2b5d802e894b8a1ef14f3a8ce490963`的`microsoft/xclip-base-patch32`。59個class prototypes由三個固定prompts的normalized text features平均後再normalize；text encoder與prototypes不更新，只訓練BlockGCN、projection與受clamp限制的scalar logit scale。Seed 42通過adaptive funnel的macro-F1條件，因此依原計畫補跑seed 43；兩組run均完成strict checkpoint reload與validation reproduction，未讀取test split。
+
+| Head / seed | Best epoch | Macro-F1 | Accuracy | NLL | ECE | Examples/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linear 42 | 100 | 86.51% | 86.56% | 0.6383 | 0.0754 | 126.26 |
+| Linear 43 | 94 | 86.43% | 86.46% | 0.6332 | 0.0729 | 129.12 |
+| XCLIP 42 | 96 | 86.17% | 86.22% | 0.6505 | 0.0608 | 125.69 |
+| XCLIP 43 | 89 | 86.14% | 86.22% | 0.6541 | 0.0583 | 127.53 |
+| Linear mean ± population stddev | — | 86.47% ± 0.04% | 86.51% ± 0.05% | 0.6358 ± 0.0025 | 0.0741 ± 0.0013 | 127.69 ± 1.43 |
+| XCLIP mean ± population stddev | — | 86.16% ± 0.02% | 86.22% ± 0.00% | 0.6523 ± 0.0018 | 0.0596 ± 0.0012 | 126.61 ± 0.92 |
+
+XCLIP的aggregate macro-F1只落後linear 0.31 percentage points，遠小於允許的2點，而且兩個seeds高度一致；這證明skeleton可可靠映射至固定XCLIP text space。XCLIP的ECE由0.0741改善至0.0596，但NLL由0.6358惡化至0.6523。依預先固定的規則「macro-F1落後不超過2點，且NLL或ECE至少一項改善、另一項不得惡化」，XCLIP未通過quality gate；不得在看過結果後放寬規則。因此Gate 3屬於Route 3，主要teacher選用`artifacts/skeletonclip_gate3/linear_seed42/best_checkpoint.pt`，而XCLIP prototype結果保留作後續獨立semantic-alignment依據。兩種head的peak allocated VRAM皆約1.08–1.09 GiB；OpenAI CLIP reference未執行，因XCLIP結果正常且已清楚回答主要head選擇，不需要診斷另一個text space。
+
+Phase 1至此go：下一階段先freeze所選linear teacher並建立paired train teacher-logit cache，cache保存temperature scaling前的59-class raw logits與完整identity。接著在既有120-class XCLIP MIT LoRA student加入只對A001–A059有效配對樣本計算的masked KL，先完成cache validation、class mapping、paired／unpaired batch與teacher-gradient-isolation smoke；正式比較必須從相同pretrained XCLIP初始化重跑CE-only與CE+KD，不能直接續訓既有winner。
 
 ### Gate 2 執行結果
 
@@ -118,7 +135,7 @@ Hyperformer、SkateFormer、HD-GCN 的官方 checkpoint 多半依官方 NTU spli
 
 ## 8. 建議的 Phase 1 決策
 
-建議採用「BlockGCN primary + Hyperformer reference + SkateFormer research-only challenger」的漏斗，而不是直接重現官方 Hyperformer。第一個正式比較先用 linear head測出 backbone ceiling，再只對勝出 backbone加入 frozen XCLIP text-prototype head。這樣可以分辨失敗來自 skeleton encoder 還是 language alignment，也把完整訓練數控制在合理範圍。
+Phase 1最終採用BlockGCN linear classifier teacher；Hyperformer已在Gate 2淘汰，SkateFormer與HD-GCN不納入本階段。XCLIP text-prototype head證明language alignment可行，但依預先固定的NLL／ECE規則不取代主要class-logit teacher，後續若研究feature-level alignment則作獨立branch，不與第一版masked-logit KD混成同一變因。
 
 預設選型順序如下：BlockGCN作 modern primary；Hyperformer一定保留到 short bake-off，提供和 SKI paper最接近的 reference；SkateFormer只有在專案用途確認符合其 research/education-only license時才進入 short bake-off，而且不成為可商用路徑的必要依賴；HD-GCN與 multi-stream ensemble延後。
 

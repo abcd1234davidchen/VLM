@@ -58,6 +58,8 @@ uv run vlm train skeleton-gate3 --heads linear --seeds 42 43
 uv run vlm train skeleton-gate3 --heads xclip --seeds 42
 ```
 
+Gate 3 is complete. The two-seed linear and XCLIP heads reached 86.47% and 86.16% mean validation macro-F1 respectively. XCLIP improved ECE from 0.0741 to 0.0596 but worsened NLL from 0.6358 to 0.6523, so it did not pass the predeclared rule requiring one calibration metric to improve without worsening the other. The selected first-pass distillation teacher is the BlockGCN linear seed-42 best checkpoint; XCLIP prototypes remain an independent semantic-alignment result. The next phase freezes that teacher, caches raw 59-class logits for valid paired training samples, and integrates explicit A001–A059 masked KL into the existing 120-class XCLIP MIT LoRA student.
+
 `xclip-lora` trains project-owned LoRA adapters on the XCLIP MIT q/v attention projections plus a new classification head. `uv run vlm embeddings extract --pipeline xclip-lora` builds only the isolated pre-MIT cache, while `uv run vlm train xclip-lora` performs cache preparation and CE-only training.
 
 XCLIP cache extraction can overlap CPU video decoding with batched GPU inference. For an 11 GB GPU, start with:

@@ -1,6 +1,6 @@
 # SkeletonCLIP teacher distillation 計畫
 
-日期：2026-09-11。狀態：資料盤點與設計；teacher architecture、checkpoint 尚未定案，本文件不代表 training pipeline 已實作。Teacher feasibility 與 backbone selection 的待審執行規格見 `docs/skeletonclip-teacher-phase1.md`。
+日期：2026-09-16。狀態：Phase 1 teacher selection已完成；第一版選用BlockGCN linear classifier teacher，下一個實作切片是frozen teacher-logit cache與masked-KL student integration。完整Gate 3結果與選型依據見 `docs/skeletonclip-teacher-phase1.md`。
 
 ## 1. 目標與建議
 
@@ -8,7 +8,7 @@
 
 第一版的研究問題是「部分 skeleton teacher supervision 是否改善 120-class RGB classification」，定位為 **skeleton-informed temporal／decision adaptation**，不是 joint-focused visual learning。現有 student 使用 frozen XCLIP vision encoder 產生已 pooled 的 `[8, 512]` frame vectors，KD 只能更新 MIT LoRA 與 classifier；student 沒有 joint coordinates 或 spatial patch supervision，因此即使 accuracy 改善，也不能據此宣稱 vision encoder 的注意力轉向人體關節。
 
-Teacher 優先評估 Hyperformer backbone + frozen CLIP text encoder 的 SkeletonCLIP 路線，但應先確認 checkpoint 的訓練資料與 preprocessing，再決定使用外部初始化或自行訓練。Gate 0 review 後已排除資料品質嚴重失衡的 A060，現有資料足以開始 A001–A059 的 59-class teacher pilot；無法提供完整 NTU120 配對監督。
+Phase 1已在乾淨paired split上比較backbone與head：BlockGCN勝過Hyperformer；BlockGCN linear teacher兩-seed macro-F1為86.47%，XCLIP text-prototype head為86.16%。XCLIP的ECE較好但NLL較差，未通過預先固定的雙校準條件，因此第一版KD使用linear teacher，XCLIP alignment留作後續獨立ablation。Gate 0 review後已排除資料品質嚴重失衡的A060，現有teacher只監督A001–A059，無法提供完整NTU120配對監督。
 
 ## 2. 本地資料盤點
 
@@ -48,15 +48,15 @@ Teacher 優先評估 Hyperformer backbone + frozen CLIP text encoder 的 Skeleto
 
 | 選項 | 適用性 | 必須先解決 |
 | --- | --- | --- |
-| 官方 SkeletonCLIP checkpoint | 若可取得且資料來源符合 split，最接近參考方法 | 權重可用性、text model、prompt、class order、訓練 IDs、license、前處理 |
-| Hyperformer + CLIP text，自行訓練／對齊 | 建議優先路線；可控制 canonical train 邊界 | backbone 初始化來源、projection、訓練成本與 teacher validation 表現 |
-| 純 Hyperformer 59-class classifier | 可作 skeleton KD sanity control | 不具 skeleton–language alignment，必須稱為 skeleton classifier teacher，不能標成 SkeletonCLIP |
+| BlockGCN linear 59-class classifier | 第一版正式class-logit teacher；兩-seed macro-F1 86.47%、NLL 0.6358 | 已選定；freeze seed 42 best checkpoint並建立raw-logit cache |
+| BlockGCN + frozen XCLIP text prototypes | 已完成的semantic-alignment candidate；兩-seed macro-F1 86.16%、ECE 0.0596 | NLL 0.6523較linear差，未通過預先固定quality gate；保留為後續alignment ablation |
+| 官方／Hyperformer SkeletonCLIP | Reference-only | Gate 2本地結果較弱，且外部checkpoint仍有split provenance風險；不阻擋第一版KD |
 
 Hyperformer 官方 repository 提供 NTU60／NTU120 pretrained weights 連結與 preprocessing scripts，但 action classifier checkpoint 不等於已對齊 CLIP 的 SkeletonCLIP。其資料準備也明列兩份 S001–S017／S018–S032 ZIP。[Hyperformer 官方程式碼](https://github.com/ZhouYuxuanYX/Hyperformer)
 
 Teacher checkpoint 的完整 training provenance 是正式實驗的必要條件。官方 cross-subject／cross-view 或 zero-shot class split 不一定與本專案 participant split 相同；即使只載入 backbone，若曾用本專案 validation／test 樣本及標籤訓練，也會污染比較。無法證明無重疊的權重只能標成 exploratory external-pretraining 實驗，不能用來支持乾淨的 KD 增益結論。
 
-乾淨路線：以 canonical train 的有效 skeleton 從頭訓練 Hyperformer action backbone，再以相同 train 做 skeleton–text CE alignment；CLIP text encoder frozen，只更新 skeleton encoder 及必要 projection。Teacher checkpoint selection 僅看 paired validation，不用 test 選 architecture／epoch／prompt。若使用額外 skeleton training samples，也必须先確保 participant 不跨 canonical 邊界，並另列為額外訓練資料實驗；第一版不擴大 teacher training set。
+乾淨路線已完成：BlockGCN從random initialization只使用canonical paired train訓練，checkpoint selection只看paired validation，未讀取test。正式teacher為`artifacts/skeletonclip_gate3/linear_seed42/best_checkpoint.pt`；ordered classes固定為A001–A059，preprocessing、manifest hash、source revision與checkpoint identity均已保存。若使用額外skeleton training samples，仍必須先確保participant不跨canonical邊界，並另列為額外訓練資料實驗；第一版不擴大teacher training set。
 
 Text encoder 具體 model ID、feature dimension、prompt templates、tokenizer revision、normalization 與 logit scale 皆需鎖定；不要因兩邊都有 512 維 feature 就假設 embedding space 相同。Teacher 先使用 ordered A001–A059 text vocabulary，並在 provenance 記錄排除 A060；選 teacher 主要依 paired validation accuracy、macro-F1、per-class error、校準及 logits 品質，不要求 teacher aggregate accuracy 必須高於 student 才能測試互補效果。
 
@@ -127,7 +127,7 @@ Teacher logits cache 放在 `cache/skeleton_teacher_logits/<identity>/`，與 RG
 
 ## 9. 後續決策
 
-第一個要定案的是 Hyperformer 初始化與 SkeletonCLIP checkpoint 來源，不是先擴大 student。接著依資料 audit 和 teacher validation 決定是否值得補 S018–S032。完整資料到位後才考慮 120-class teacher、online MSE SCD 或 feature alignment，且每項都需要自己的 control。
+Teacher與checkpoint來源已定案。下一步依序是：以selected BlockGCN linear checkpoint建立並驗證paired-train raw-logit cache；把explicit A001–A059 mapping與masked KL接入既有XCLIP MIT LoRA student；完成paired／unpaired與`P`為空的integration smoke；最後以相同初始化和budget跑CE-only對照與CE+KD validation search。是否補S018–S032、建立120-class teacher、online MSE SCD或feature alignment均延後，且每項需要自己的control。
 
 Student adaptation 分成以下兩個後續層次，不與第一版 class-level KD 同時引入：
 
