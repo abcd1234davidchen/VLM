@@ -4,7 +4,7 @@ from .gru import GRUVideoClassifier
 from .prototype import PrototypeVideoClassifier
 from .xclip import XCLIPFeatureClassifier
 from .xclip_lora import XCLIPMITClassifier, XCLIPMITLoRAClassifier
-from .xclip_vision_lora import XCLIPVisionLoRAClassifier
+from .xclip_vision_lora import XCLIPSpatialLoRAClassifier, XCLIPVisionLoRAClassifier
 
 __all__ = [
     "GRUVideoClassifier",
@@ -13,4 +13,5 @@ __all__ = [
     "XCLIPMITClassifier",
     "XCLIPMITLoRAClassifier",
     "XCLIPVisionLoRAClassifier",
+    "XCLIPSpatialLoRAClassifier",
 ]

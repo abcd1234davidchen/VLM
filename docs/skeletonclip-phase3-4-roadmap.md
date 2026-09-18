@@ -1,6 +1,6 @@
 # SkeletonCLIP Phase 3–4 roadmap
 
-日期：2026-09-18。狀態：Phase 2 已完成 Gate 0–4，class-level masked-KL 結果為 no-go；Phase 3 Gate 0 已通過，vision-only CE run 在 epoch 37 後因 validation 退步而停止，最佳 epoch 13 validation accuracy 為 58.92%；同設定的完整 frozen control 尚未完成，因此原 Gate 1 的 paired comparison 尚未通過，Phase 4 尚未啟動。Gate 編號在各 Phase 內獨立計算，本文以「Phase 3 Gate 0」或「Phase 4 Gate 0」避免混淆。
+日期：2026-09-18。狀態：Phase 2 已完成 Gate 0–4，class-level masked-KL 結果為 no-go；Phase 3 Gate 0 已通過，vision-only CE run 在 epoch 37 後因 validation 退步而停止，最佳 epoch 13 validation accuracy 為 58.92%；同設定的完整 frozen control 尚未完成，因此原 Gate 1 的 paired comparison 尚未通過；Phase 4 Gate 0 與 Gate 1 功能 smoke 已通過，Gate 2 三組各 20 epochs 已完成，定位有小幅 conditional signal，分類 accuracy 無明顯改善，Gate 3 暫不啟動。Gate 編號在各 Phase 內獨立計算，本文以「Phase 3 Gate 0」或「Phase 4 Gate 0」避免混淆。
 
 ## 1. 目的與階段邊界
 
@@ -153,6 +153,32 @@ Class logits 只約束動作類別分布，沒有指定模型應該看哪個 reg
 - Gate 2：在固定架構與 CE-only control 上完成一種最小 heatmap／region-mask ablation；localization 必須優於 CE control 與中心 baseline，shuffled-joint control 不應有相同提升。若缺乏可重現的 spatial signal，停止擴大實驗。
 - Gate 3：只有在 spatial evidence 可重現時，才進行有限的 loss／weight search，並依預先鎖定的 validation 決策規則選 winner、執行一次 test；完整 120 類 accuracy 與各 coverage subgroup 分開判讀。
 
+#### Gate 2 啟動鎖（2026-09-18）
+
+`vlm train skeleton-phase4-gate2` 已完成資料與初始化 preflight，產生 `artifacts/skeletonclip_phase4/gate2/experiment_lock.json`。先前 sandbox 看不到 GPU；解除 sandbox 後確認本機 RTX 2080 Ti 可用。真實模型 GPU Gate 1 resource smoke 通過，峰值 allocated VRAM 約 0.56 GiB；Gate 2 三組各 2 個 training batches 的 GPU smoke 也完成，batch 16 峰值約 1.1 GiB，結果位於 `artifacts/skeletonclip_phase4/gate2_smoke/`。正式三組訓練於 2026-09-18 10:52 台北時間在 `tmux` session `phase4_gate2` 啟動並完成，輸出目錄為 `artifacts/skeletonclip_phase4/gate2/`。選用 Phase 3 vision-only 最佳 adapter 作三組共同起點，固定 seed 42、batch 16、20 epochs、spatial weight 0.1；CE、joint、shuffled-joint 共享 RGB split、模型與訓練預算。20 epochs 是首輪受控訊號檢查的固定預算，不代表已證實足夠收斂；0.1 是首輪單一權重假設，Gate 2 不搜尋權重。CE arm 的 spatial probe 從 detached patch tokens 學習，以相同 target 和 loss 建立 localization 參考，但 probe 梯度不進入 vision；joint arm 讓 spatial 梯度進入 vision，shuffled-joint arm 只置換 train paired target。Validation localization 使用 held-out paired validation 有效 frame 的 patch AP 與依 target occupied count 的 top-k recall，並與 CE probe、中心 prior 比較；test embargo 維持。完整結果與決策見 `docs/skeletonclip-phase4-gate2-results.md`。
+
+#### Gate 0 首輪執行（2026-09-18）
+
+已新增 `vlm data skeleton-phase4-gate0`，從原始 `.skeleton` 讀取 color-image `colorX/colorY`、joint tracking state、body ID，使用與 Phase 3 相同的 PyAV whole-video 八幀 indices，記錄實際 decoded PTS／時間，依鎖定的 XCLIP shortest-edge resize 與 center crop 幾何轉成 224×224 輸入座標並輸出 overlay、逐 sample JSONL 和分組摘要。執行前門檻與抽樣規則保存在 `docs/skeletonclip-phase4-gate0-lock.json`；執行產物在 `artifacts/skeletonclip_phase4/gate0/`，沒有讀取 test。
+
+首輪從 paired manifest 抽取 train 24、validation 12 筆，涵蓋 30 類、S001–S017 與 C001–C003。36 筆的 RGB／skeleton frame count 均相同；288 張 frame 的 decoded timestamp 與以 FPS 推得的時間一致；每張至少 11 個 tracked joints 落在 processor crop 內，36／36 筆達到預先鎖定的自動 coverage 門檻。人工抽看單人與雙人 overlay，點位在人體附近；這項目視結果尚未量出 16 px 中位誤差，也無法獨立證明沒有固定 frame offset。原始 NTU skeleton 檔缺逐幀 timestamp，目前只能依 frame index 和影像內容核對時間對齊。
+
+全量 train／validation paired manifest 的 49,416 筆已完成不解碼影像的 metadata／原始 joint coverage 掃描；逐筆結果在 `full_coverage.jsonl`，分組摘要在 `full_coverage_report.json`。全部影片與 skeleton frame count 相同，沒有解析錯誤。依預先鎖定的「八幀中至少 75% 的 frame 各有至少 10 個 crop 內 tracked joints」條件，49,171／49,416 筆（99.50%）可用，245 筆因 joint coverage 不足排除；train 為 45,007／45,236（99.49%），validation 為 4,164／4,180（99.62%）。A059 明顯較低，只有 597／734（81.34%）；A055 為 760／795（95.60%），其他類別最低為 A043 的 823／835（98.56%）。全部 36 筆可視化樣本的 tracked-joint 計數與全量掃描逐筆一致。這個全量統計只檢查 frame index、座標與 tracking 可用性，沒有量到影像上的 joint 誤差。
+
+Gate 0 的目視與量化審核現已完成。從 36 筆分層樣本中選取 12 筆中段 frame，另加入 4 筆 A059（兩筆自動可用、兩筆排除），在未畫點的 224×224 processor 影像上目視標註 62 個可見 head／ankle／hand landmarks；依鎖定座標轉換，誤差中位數 `2.45 px`、最大 `7.23 px`，低於事前固定的 `16 px` 中位數門檻。這些標註是同一 agent 的近似、非盲測目視估計，故不視為獨立標註資料。16 組 RGB `t−3/t/t+3` 面板均已目視檢查；對其中有至少 8 px 動作變化且七個相鄰 skeleton frames 皆 tracked 的 8 個 landmarks，將 skeleton `t−3…t+3` 與 RGB `t` 的標註點比較，`t=0` 的中位誤差 `2.93 px` 最低，`t−1`／`t+1` 分別為 `5.79`／`5.58 px`，沒有觀察到一致的 signed frame offset。4 筆 A059 的八幀 overlay 也已目視檢查；兩筆排除案例的部分 frame 是人物尚未進入或已離開有效 crop，而有人物的 frame 仍可對齊。標註、目視紀錄及機器產生的詳細結果分別在 `docs/skeletonclip-phase4-gate0-landmarks.json`、`docs/skeletonclip-phase4-gate0-visual-review.json`、`artifacts/skeletonclip_phase4/gate0/manual_alignment_report.json`。
+
+**Phase 4 Gate 0：pass。** `artifacts/skeletonclip_phase4/gate0/gate0_decision.json` 對鎖定門檻、來源 hashes、sample／full coverage、人工誤差、時間偏移與 test embargo 逐項核對並記錄 pass。這項結論僅適用 NTU60 A001–A059 的 paired train／validation，以及本次小規模影像審核；原始 skeleton 沒有獨立逐幀 timestamp，不能據此聲稱所有樣本的每個 joint 都有同等精度。A059 可用率 `81.34%`，後續 spatial supervision 須保留逐 frame／joint mask，不得把排除 frame 當作零座標目標。Gate 1 可開始 patch-token／spatial-loss 相容性 smoke，但尚未啟動分類或 spatial training。
+
+#### Gate 1 真實模型功能 smoke（2026-09-18）
+
+新增 `vlm train skeleton-phase4-gate1`、`XCLIPSpatialLoRAClassifier` 與原始 color-joint 到 patch32 occupancy target。分類路徑沿用 Phase 3 的 RGB vision／MIT／120-class head；training-only `spatial_head` 讀取每張 vision `last_hidden_state` 的 49 個 patch tokens，輸出 `[batch, 8, 49]` logits。target 只使用兩個主要 body IDs 中 tracking state 2 且落在 224×224 crop 內的 joints；每 frame 至少 10 個有效 joints 才施加 balanced patch BCE，無效 frame／unpaired sample 的 spatial loss 為零。Gate 2 若將 spatial weight 設為 0，CE-only 路徑不對 spatial head 反向傳播。
+
+在鎖定 XCLIP revision、真實 train A059 雙人影片與原始 `.skeleton` 上，processor pixels 為 `[1, 8, 3, 224, 224]`、patch tokens 為 `[1, 8, 49, 768]`、分類 logits 為 `[1, 120]`；八幀均有 spatial target，共 335 個有效 joints。spatial-only loss 的非零梯度進入 vision blocks 10／11 的 q/v LoRA 與 spatial head，不進入 MIT／classifier／frozen base；一步 optimizer 更新後，patch tokens 最大變化 `0.02984`、RGB 分類 logits 最大變化 `0.00325`。CE-only backward 更新 vision／MIT／classifier，但 spatial head 無梯度。trainable parameters 為 194,425；adapter strict reload 的分類與 spatial logits 差異皆為 `0`，FP32 merge 與 merged RGB-only strict reload 的最大差異分別不超過 `6.26e-7`。`artifacts/skeletonclip_phase4/gate1/` 保存 experiment lock、checkpoint 與完整報告；`test_evaluated=false`。
+
+**Phase 4 Gate 1 功能契約：pass。** 最初 sandbox 看不到 NVIDIA GPU，因此先用真實 pretrained XCLIP 在 CPU 完成單支影片 smoke；其後在主機 GPU 上重新跑 resource smoke 並通過，peak allocated VRAM 約 0.56 GiB。Gate 1 本身不包含分類品質或 localization 改善結論；正式 Gate 2 結果另見 `docs/skeletonclip-phase4-gate2-results.md`。
+
+時程校正：Gate 1 沿用 Phase 3 vision LoRA、RGB forward 與 checkpoint 路徑，加上 Gate 0 已完成的 joint 幾何，實際在本次工作中不到一小時完成；先前以數天估計 Gate 1，是把可能的整合問題當作預期工期。Phase 3 uint8 cache run 的完整訓練加 validation 在連續 epoch 5–37 的中位數約 `13.13 分鐘／epoch`，範圍約 `10.85–15.25 分鐘`；早期未加速 RGB path 約一小時／epoch，不能直接推估 Gate 2。Gate 2 啟動前另行固定三組各 20 epochs，完整 run 的穩態 epoch 約 9–10 分鐘；第一組前兩個 epoch 含 cache／系統暖機，較慢。
+
 ## 4. Phase 3 對 Phase 4 的決策規則
 
 Phase 3 是 Phase 4 的風險指標，不是硬性前置條件。Phase 3 accuracy no-go 不會自動取消 Phase 4，因為 spatial supervision 驗證的是不同假設。
@@ -164,7 +190,7 @@ Phase 3 是 Phase 4 的風險指標，不是硬性前置條件。Phase 3 accurac
 
 ## 5. 目前決策
 
-Phase 3 Gate 0 已通過；短期 warm-start pilot 的 vision LoRA validation 比 frozen 高 `1.5355` 個百分點。正式 vision-only CE run 在 epoch 37 後停止，最佳 epoch 13 validation accuracy `58.92%`，高於歷史調參後 XCLIP + MIT LoRA 的 `52.12%`；後期 validation 退步且仍缺同設定完整 frozen control，Gate 1 paired comparison 尚未通過。Phase 3 Gate 2 的 subgroup 分析與 validation 決策尚未完成，Gate 3 class-level KD 預設不啟動，test embargo 維持。Phase 4 可先執行自己的 Gate 0 joint-to-RGB 對齊 audit；若之後以 vision LoRA best adapter 作為 Phase 4 起點，joint-loss arm 與 CE-only control 必須從相同 checkpoint 初始化，此選擇尚未鎖定。
+Phase 3 Gate 0 已通過；短期 warm-start pilot 的 vision LoRA validation 比 frozen 高 `1.5355` 個百分點。正式 vision-only CE run 在 epoch 37 後停止，最佳 epoch 13 validation accuracy `58.92%`，高於歷史調參後 XCLIP + MIT LoRA 的 `52.12%`；後期 validation 退步且仍缺同設定完整 frozen control，Gate 1 paired comparison 尚未通過。Phase 3 Gate 2 的 subgroup 分析與 validation 決策尚未完成，Gate 3 class-level KD 預設不啟動，test embargo 維持。Phase 4 Gate 0／1 已通過；Gate 2 三組各 20 epochs 已完成。Joint 最終 patch AP `0.956869`，CE `0.954959`，shuffled-joint `0.759423`，方向性比較成立但 joint 對 CE 僅高 `0.001911`；120-class accuracy 各組約 `58.5–58.6%`。單一 seed、未估計樣本層級不確定性，且缺分類 subgroup logits，尚不足以支持可重現改善或完整分類解讀，故 Phase 4 Gate 3 暫不啟動；不讀 test。
 
 ## 6. 跨 session 續接
 
@@ -178,6 +204,6 @@ Phase 3 Gate 0 已通過；短期 warm-start pilot 的 vision LoRA validation �
 
 下一個獨立工作是 Phase 3 Gate 2：從最佳 epoch 的完整 validation logits 計算 120 類、A001–A059、A060–A120、paired／unpaired subgroup metrics，並與歷史 XCLIP／LoRA 結果及 pilot 對照，明確標註訓練與輸入路徑差異。若要正式回答 vision adaptation 相對 frozen 的效果，還需另行決定是否以相同 RGB／uint8 cache、初始化、seed、batch 16、24 workers、訓練預算及 selection rule 執行完整 frozen control；目前沒有該對照，也沒有 test-once 決策，勿讀 Phase 3 test。Phase 3 Gate 3 是可選的 class-level KD，並非 Phase 4 的前置步驟。
 
-Phase 4 的下一步是 Gate 0 原始 joints 與實際 RGB frames 的時間／空間對齊和 coverage audit，不是立即調 spatial loss。若後續選擇從這次 vision LoRA `best_adapter.pt` warm-start，joint-loss arm 與 CE-only control 必須使用同一個起點；是否這樣初始化尚未鎖定。Phase 4 預期仍是 RGB-only inference，skeleton 只作 training supervision；需先通過對齊、patch-token 梯度與 control 檢查，才能把分類或 localization 變化歸因於 joint supervision。
+Phase 4 Gate 0／1 與 Gate 2 三組訓練均已完成。完整 Gate 2 比較在 `docs/skeletonclip-phase4-gate2-results.md`、`artifacts/skeletonclip_phase4/gate2/gate2_decision.json` 與各 arm `run_report.json`；實驗鎖、啟動指令、checkpoint 和追加式 `train.log` 仍在同一 artifact 目錄。Gate 2 沒有產生 Gate 3 的啟動決策，後續若要研究 spatial signal，需先另行鎖定可重現性與最小有效差距；目前不自動啟動其他訓練或讀 test。Phase 4 推論仍只需 RGB，skeleton 僅為 training supervision。
 
-程式入口為 `vlm train skeleton-phase3-gate1`，主要實作在 `src/vlm/training/skeletonclip_phase3_gate1.py`、`src/vlm/processed_uint8_cache.py`、`src/vlm/models/xclip_vision_lora.py`；此完整 Phase 3 功能和本 roadmap 目前都在未提交的工作樹，包含已修改的 `src/vlm/cli.py`、`src/vlm/models/__init__.py`、`src/vlm/models/lora.py` 及未追蹤的訓練、cache、test 檔。清空對話不會保存未提交修改到 Git；接手時先執行 `git status --short`，不要 reset／clean 這些檔案。此 session 已確認 `git diff --check` 通過、cache 對四支真實影片首次／命中 pixels 逐值相同，且 checkpoint handoff 拒絕 batch size 變更；完整 60-epoch run 和新 cache 的所有邊界情形未另行驗證。
+Phase 3 入口為 `vlm train skeleton-phase3-gate1`，Phase 4 Gate 0／1 入口分別為 `vlm data skeleton-phase4-gate0` 與 `vlm train skeleton-phase4-gate1`。主要 Phase 4 實作在 `src/vlm/phase4_alignment.py`、`src/vlm/spatial_joint_targets.py`、`src/vlm/models/xclip_vision_lora.py`、`src/vlm/training/skeletonclip_phase4_gate1.py`；Gate 0／1 目前仍在未提交工作樹，接手時先執行 `git status --short`，不要 reset／clean 這些檔案。Gate 1 使用 CPU 真實模型 smoke，沒有可見 CUDA driver；完整 Gate 2 training 與新 spatial target pipeline 的長程吞吐仍未驗證。

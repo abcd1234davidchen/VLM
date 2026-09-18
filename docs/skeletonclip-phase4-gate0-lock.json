@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "created_before_audit": true,
+  "sample_policy": "Per split, greedily cover distinct class/setup/camera from SHA256-sorted paired identities; 24 train and 12 validation samples",
+  "frame_policy": "Phase 3 whole-video uniform_frame_indices, eight frames, PyAV RGB24 decode",
+  "coordinate_policy": "NTU joint colorX/colorY fields 5/6; XCLIP shortest-edge 224 bilinear resize then 224 center crop; tracked joints only (state 2)",
+  "automated_thresholds": {
+    "max_frame_count_difference": 2,
+    "min_usable_sample_fraction": 0.8,
+    "min_usable_frame_fraction_per_sample": 0.75,
+    "min_in_crop_tracked_joints_per_frame": 10
+  },
+  "manual_thresholds": {
+    "max_median_visible_joint_error_px": 16,
+    "require_no_systematic_frame_offset": true
+  },
+  "decision_policy": "Gate 0 requires both automated thresholds and manual overlay review. Until manual review and full paired coverage finish, status is pending; no spatial training."
+}

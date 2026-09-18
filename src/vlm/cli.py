@@ -22,6 +22,8 @@ TRAIN_COMMANDS = {
     "skeleton-phase2-gate4": "vlm.training.skeletonclip_phase2_gate4",
     "skeleton-phase3": "vlm.training.skeletonclip_phase3",
     "skeleton-phase3-gate1": "vlm.training.skeletonclip_phase3_gate1",
+    "skeleton-phase4-gate1": "vlm.training.skeletonclip_phase4_gate1",
+    "skeleton-phase4-gate2": "vlm.training.skeletonclip_phase4_gate2",
 }
 EMBEDDING_COMMANDS = {
     name: module
@@ -36,6 +38,7 @@ EXPERIMENT_COMMANDS = {
 }
 DATA_COMMANDS = {
     "skeleton-audit": "vlm.skeleton_data",
+    "skeleton-phase4-gate0": "vlm.phase4_alignment",
 }
 
 
