@@ -20,6 +20,8 @@ TRAIN_COMMANDS = {
     "skeleton-phase2": "vlm.training.skeletonclip_phase2",
     "skeleton-phase2-gate3": "vlm.training.skeletonclip_phase2_gate3",
     "skeleton-phase2-gate4": "vlm.training.skeletonclip_phase2_gate4",
+    "skeleton-phase3": "vlm.training.skeletonclip_phase3",
+    "skeleton-phase3-gate1": "vlm.training.skeletonclip_phase3_gate1",
 }
 EMBEDDING_COMMANDS = {
     name: module

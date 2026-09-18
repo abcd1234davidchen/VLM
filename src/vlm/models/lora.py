@@ -142,6 +142,33 @@ def inject_mit_attention_lora(
     return targets
 
 
+def inject_vision_attention_lora(
+    vision_model: nn.Module,
+    *,
+    upper_blocks: int,
+    rank: int,
+    alpha: float,
+    dropout: float,
+) -> list[str]:
+    """Inject q/v LoRA into the final vision Transformer blocks only."""
+    encoder = getattr(vision_model, "encoder", None)
+    layers = getattr(encoder, "layers", None)
+    if layers is None or not 0 <= upper_blocks <= len(layers):
+        raise ValueError("upper_blocks must select existing vision encoder layers")
+    targets: list[str] = []
+    for index in range(len(layers) - upper_blocks, len(layers)):
+        attention = getattr(layers[index], "self_attn", None)
+        if attention is None:
+            raise ValueError(f"Vision layer {index} has no self_attn module")
+        for name in ("q_proj", "v_proj"):
+            projection = getattr(attention, name, None)
+            if not isinstance(projection, nn.Linear):
+                raise TypeError(f"Vision layer {index} {name} is not nn.Linear")
+            setattr(attention, name, LoRALinear(projection, rank=rank, alpha=alpha, dropout=dropout))
+            targets.append(f"vision_model.encoder.layers.{index}.self_attn.{name}")
+    return targets
+
+
 def iter_lora_modules(module: nn.Module):
     for child in module.modules():
         if isinstance(child, LoRALinear):
