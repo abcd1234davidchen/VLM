@@ -1,6 +1,6 @@
 # SkeletonCLIP teacher distillation 計畫
 
-日期：2026-09-16。狀態：Phase 1 teacher selection已完成；第一版選用BlockGCN linear classifier teacher，下一個實作切片是frozen teacher-logit cache與masked-KL student integration。完整Gate 3結果與選型依據見 `docs/skeletonclip-teacher-phase1.md`。
+日期：2026-09-16。狀態：Phase 1 teacher selection已完成；第一版選用BlockGCN linear classifier teacher，完整Gate 3結果與選型依據見 `docs/skeletonclip-teacher-phase1.md`。Phase 2 frozen teacher-logit cache與masked-KL student已完成，Gate 4 validation-only search結論為 `no-go`，見 `docs/skeletonclip-distillation-phase2.md`；後續 Phase 3 vision adaptation 與 Phase 4 spatial joint supervision 見 `docs/skeletonclip-phase3-4-roadmap.md`。
 
 ## 1. 目標與建議
 

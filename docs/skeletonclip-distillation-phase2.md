@@ -1,6 +1,6 @@
 # SkeletonCLIP Phase 2：teacher-logit cache 與 masked-KL distillation
 
-日期：2026-09-16。狀態：Gate 0–2 已完成；identity lock、45,236 筆 frozen teacher raw-logit cache與 masked-KL integration smoke皆通過，尚未啟動 Gate 3 full training。Phase 1 已完成 teacher selection，依據與完整結果見 `docs/skeletonclip-teacher-phase1.md`；整體研究背景見 `docs/skeletonclip-distillation-plan.md`。
+日期：2026-09-16。狀態：Gate 0–4 已完成；identity lock、45,236 筆 frozen teacher raw-logit cache與 masked-KL integration smoke皆通過，Gate 3 CE control通過 parity，Gate 4 九組 validation-only KD search結論為 `no-go`，因此不執行 Gate 5 seed-43 confirmation或 test-once。Phase 1 已完成 teacher selection，依據與完整結果見 `docs/skeletonclip-teacher-phase1.md`；整體研究背景見 `docs/skeletonclip-distillation-plan.md`。
 
 目前可續接點：`uv run vlm train skeleton-phase2 --through-gate 2 --batch-size 64 --workers 4` 會依序重驗 Gate 0、fail-closed reuse Gate 1 cache並重跑 Gate 2 smoke。正式 cache位於 `cache/skeleton_teacher_logits/3e4926a1f26529e1/teacher_logits.pt`；machine-readable結果位於 `artifacts/skeletonclip_phase2/`。Gate 3 前不得讀 test split。
 
