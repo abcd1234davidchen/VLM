@@ -36,3 +36,7 @@ These rules record explicit behavior corrections made by the user while working 
 - Write each Markdown paragraph and each individual list item on one physical line.
 - Do not insert manual line breaks in the middle of a sentence; let the editor or IDE handle visual wrapping.
 - Code blocks and Markdown structures that inherently require multiple lines, such as tables, are exempt.
+
+## Running conventions
+- Smoke tests are allowed, but ensure they cover only the most important behaviors and do not take too long to run.
+- Control group aren't mandatory as faster iteration on model with shorter train time and higher accuracy is preferred.

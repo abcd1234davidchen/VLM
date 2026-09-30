@@ -31,6 +31,7 @@ EMBEDDING_COMMANDS = {
     if name != "xclip-lora-tune"
 }
 EXPERIMENT_COMMANDS = {
+    "action-taxonomy": "vlm.experiments.action_taxonomy",
     "clip": "vlm.experiments.clip_video",
     "xclip": "vlm.experiments.xclip",
     "xclip-vision": "vlm.experiments.xclip_vision",

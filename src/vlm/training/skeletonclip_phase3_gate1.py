@@ -19,6 +19,12 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Dataset
 from transformers import XCLIPModel, XCLIPProcessor
 
+from vlm.action_taxonomy import (
+    ActionTaxonomy,
+    annotate_output_prediction,
+    build_reduced_action_taxonomy,
+    public_prediction_metrics,
+)
 from vlm.models.lora import lora_state_dict, load_lora_state_dict, merge_lora, merged_base_state_dict
 from vlm.models.xclip_vision_lora import XCLIPVisionClassifier, XCLIPVisionLoRAClassifier
 from vlm.processed_rgb_cache import ProcessedRGBCache
@@ -30,10 +36,15 @@ from vlm.xclip_features import FRAME_SAMPLING_STRATEGY, read_uniform_video_frame
 
 
 class RGBVideoDataset(Dataset):
-    def __init__(self, rows: list[dict[str, object]], processor: XCLIPProcessor, cache: ProcessedRGBCache | ProcessedUInt8Cache | None = None) -> None:
+    def __init__(self, rows: list[dict[str, object]], processor: XCLIPProcessor, cache: ProcessedRGBCache | ProcessedUInt8Cache | None = None, taxonomy: ActionTaxonomy | None = None) -> None:
         self.rows = rows
         self.processor = processor
         self.cache = cache
+        self.taxonomy = taxonomy
+        self.output_index = (
+            {class_id: index for index, class_id in enumerate(taxonomy.output_class_ids)}
+            if taxonomy else None
+        )
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -46,7 +57,11 @@ class RGBVideoDataset(Dataset):
             pixels = self.processor(images=list(frames), return_tensors="pt")["pixel_values"].squeeze(0)
         else:
             pixels = self.cache.load(video_path)
-        return pixels, int(row["class_id"]) - 1
+        source_class_id = int(row["class_id"])
+        label = source_class_id - 1
+        if self.taxonomy is not None and self.output_index is not None:
+            label = self.output_index[self.taxonomy.source_to_output[source_class_id]]
+        return pixels, label
 
 
 def _seed_worker(worker_id: int) -> None:
@@ -79,7 +94,7 @@ def _log(path: Path, payload: dict[str, object]) -> None:
 def _model(args: argparse.Namespace, device: torch.device) -> XCLIPVisionLoRAClassifier:
     base = XCLIPModel.from_pretrained(args.model_name, revision=args.model_revision, local_files_only=True)
     model = XCLIPVisionLoRAClassifier(
-        base, num_classes=120, head_dropout=args.head_dropout,
+        base, num_classes=args.num_classes, head_dropout=args.head_dropout,
         upper_blocks=0 if args.arm == "frozen" else args.upper_blocks,
         lora_rank=args.lora_rank, lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout, feature_noise_std=args.feature_noise_std,
@@ -130,7 +145,7 @@ def _same_experiment_except_cache(old: dict[str, object], new: dict[str, object]
     return old == new
 
 
-def _load_ce_initialization(model: XCLIPVisionLoRAClassifier, path: Path) -> None:
+def _load_ce_initialization(model: XCLIPVisionLoRAClassifier, path: Path, *, load_classifier: bool = True) -> None:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     if checkpoint.get("class_ids") != list(range(1, 121)):
         raise ValueError("CE initialization has a different 120-class order")
@@ -145,7 +160,8 @@ def _load_ce_initialization(model: XCLIPVisionLoRAClassifier, path: Path) -> Non
     with torch.no_grad():
         for name, value in source.items():
             parameters[name].copy_(value)
-    model.classifier.load_state_dict(checkpoint["classifier_state_dict"], strict=True)
+    if load_classifier:
+        model.classifier.load_state_dict(checkpoint["classifier_state_dict"], strict=True)
 
 
 def _stratified_subset(rows: list[dict[str, object]], fraction: float) -> list[dict[str, object]]:
@@ -171,7 +187,7 @@ def _loader(dataset: Dataset, args: argparse.Namespace, *, train: bool) -> DataL
     )
 
 
-def _evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *, max_batches: int | None) -> tuple[dict[str, float], torch.Tensor, torch.Tensor]:
+def _evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *, max_batches: int | None, num_classes: int) -> tuple[dict[str, float], torch.Tensor, torch.Tensor]:
     model.eval()
     logits_rows: list[torch.Tensor] = []
     labels_rows: list[torch.Tensor] = []
@@ -183,7 +199,9 @@ def _evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *, max
             labels_rows.append(labels)
     logits, labels = torch.cat(logits_rows), torch.cat(labels_rows)
     predicted = logits.argmax(1)
-    confusion = torch.bincount(labels * 120 + predicted, minlength=120 * 120).reshape(120, 120)
+    confusion = torch.bincount(
+        labels * num_classes + predicted, minlength=num_classes * num_classes
+    ).reshape(num_classes, num_classes)
     tp = confusion.diag().float()
     denominator = confusion.sum(0).float() + confusion.sum(1).float()
     macro_f1 = torch.where(denominator > 0, 2 * tp / denominator.clamp_min(1), 0).mean()
@@ -196,10 +214,13 @@ def _evaluate(model: nn.Module, loader: DataLoader, device: torch.device, *, max
     return metrics, logits, labels
 
 
-def _train_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, args: argparse.Namespace, device: torch.device, *, epoch: int, output: Path) -> tuple[float, int]:
+def _train_epoch(model: nn.Module, loader: DataLoader, optimizer: torch.optim.Optimizer, scaler: torch.amp.GradScaler, args: argparse.Namespace, device: torch.device, *, epoch: int, output: Path, class_weights: torch.Tensor | None) -> tuple[float, int]:
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    criterion = nn.CrossEntropyLoss(
+        label_smoothing=args.label_smoothing,
+        weight=class_weights,
+    )
     loss_sum = 0.0
     seen = 0
     started = time.perf_counter()
@@ -244,11 +265,12 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
     cache = ProcessedRGBCache(Path(args.rgb_cache_dir), processor, model_name=args.model_name, model_revision=args.model_revision) if args.rgb_cache_dir else None
     if args.uint8_cache_dir:
         cache = ProcessedUInt8Cache(Path(args.uint8_cache_dir), processor, model_name=args.model_name, model_revision=args.model_revision)
-    train_loader = _loader(RGBVideoDataset(train_rows, processor, cache), args, train=True)
-    val_loader = _loader(RGBVideoDataset(val_rows, processor, cache), args, train=False)
+    taxonomy = build_reduced_action_taxonomy() if args.action_taxonomy else None
+    train_loader = _loader(RGBVideoDataset(train_rows, processor, cache, taxonomy), args, train=True)
+    val_loader = _loader(RGBVideoDataset(val_rows, processor, cache, taxonomy), args, train=False)
     model = _model(args, device)
     if args.init_adapter:
-        _load_ce_initialization(model, Path(args.init_adapter))
+        _load_ce_initialization(model, Path(args.init_adapter), load_classifier=taxonomy is None)
     model.eval()
     initial_pixels, _ = next(iter(val_loader))
     with torch.inference_mode():
@@ -299,14 +321,15 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
             shutil.copyfile(resume_path.parent / "best_validation_logits.pt", output / "best_validation_logits.pt")
     torch.cuda.reset_peak_memory_stats(device)
     started = time.perf_counter()
+    class_weights = taxonomy.loss_weights().to(device) if taxonomy else None
     for epoch in range(start_epoch, args.epochs + 1):
-        train_loss, train_count = _train_epoch(model, train_loader, optimizer, scaler, args, device, epoch=epoch, output=output)
+        train_loss, train_count = _train_epoch(model, train_loader, optimizer, scaler, args, device, epoch=epoch, output=output, class_weights=class_weights)
         if args.max_train_batches is None and train_count != len(train_rows):
             raise RuntimeError(f"Expected {len(train_rows)} train samples, got {train_count}")
         evaluate_now = epoch % args.validate_every == 0 or epoch == args.epochs
         metrics = None
         if evaluate_now:
-            metrics, logits, labels = _evaluate(model, val_loader, device, max_batches=args.max_val_batches)
+            metrics, logits, labels = _evaluate(model, val_loader, device, max_batches=args.max_val_batches, num_classes=args.num_classes)
             if args.max_val_batches is None and metrics["samples"] != 12960:
                 raise RuntimeError(f"Expected 12,960 validation samples, got {metrics['samples']}")
         scheduler.step()
@@ -314,7 +337,7 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
         history.append(row)
         if metrics is not None and metrics["accuracy"] > best_accuracy:
             best_accuracy, best_epoch = metrics["accuracy"], epoch
-            _atomic_checkpoint(output / "best_adapter.pt", {"identity": run_identity, "epoch": epoch, "model": _snapshot(model), "validation": metrics})
+            _atomic_checkpoint(output / "best_adapter.pt", {"identity": run_identity, "epoch": epoch, "model": _snapshot(model), "validation": metrics, "action_taxonomy": taxonomy.as_dict() if taxonomy else None})
             _atomic_checkpoint(output / "best_validation_logits.pt", {"logits": logits, "labels": labels, "sample_ids": [Path(str(item["video_path"])).stem.removesuffix("_rgb") for item in val_rows[:len(labels)]]})
         checkpoint = {
             "identity": run_identity, "epoch": epoch, "model": _snapshot(model),
@@ -343,7 +366,7 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
     merged_payload = torch.load(output / "best_merged.pt", map_location="cpu", weights_only=False)
     clean = XCLIPVisionClassifier(
         XCLIPModel.from_pretrained(args.model_name, revision=args.model_revision, local_files_only=True),
-        num_classes=120, head_dropout=args.head_dropout,
+        num_classes=args.num_classes, head_dropout=args.head_dropout,
     ).to(device)
     clean.load_state_dict(merged_payload["state_dict"], strict=True)
     clean.eval()
@@ -352,7 +375,24 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
     reload_error = float((reloaded_logits - reference).abs().max())
     if not torch.allclose(reference, reloaded_logits, atol=1e-5, rtol=1e-5):
         raise RuntimeError(f"Merged RGB-only reload parity failed: {reload_error}")
-    report = {"status": "completed", "arm": args.arm, "initial_logits_sha256": initial_logits_sha256, "best_epoch": best_epoch, "best_validation_accuracy": best_accuracy, "trainable_parameter_audit": audit, "history": history, "peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device), "merge_max_abs_diff": parity, "merged_reload_max_abs_diff": reload_error, "test_evaluated": False}
+    taxonomy_metrics = None
+    if taxonomy:
+        best_logits = torch.load(output / "best_validation_logits.pt", map_location="cpu", weights_only=True)["logits"]
+        predicted_indices = best_logits.argmax(1).tolist()
+        predicted_ids = [taxonomy.output_class_ids[index] for index in predicted_indices]
+        source_ids = [int(row["class_id"]) for row in val_rows[:len(predicted_ids)]]
+        taxonomy_metrics = public_prediction_metrics(source_ids, predicted_ids, taxonomy)
+        predictions = []
+        for row, predicted_id in zip(val_rows, predicted_ids):
+            source_id = int(row["class_id"])
+            predictions.append({
+                "video": Path(str(row["video_path"])).name,
+                "true_class_id": source_id,
+                "predicted_class_id": predicted_id,
+                **annotate_output_prediction(source_id, predicted_id, taxonomy),
+            })
+        _atomic_json(output / "validation_predictions.json", predictions)
+    report = {"status": "completed", "arm": args.arm, "initial_logits_sha256": initial_logits_sha256, "best_epoch": best_epoch, "best_validation_accuracy": best_accuracy, "taxonomy_validation_metrics": taxonomy_metrics, "action_taxonomy": taxonomy.as_dict() if taxonomy else None, "trainable_parameter_audit": audit, "history": history, "peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device), "merge_max_abs_diff": parity, "merged_reload_max_abs_diff": reload_error, "test_evaluated": False}
     _atomic_json(output / "run_report.json", report)
     _atomic_json(output / "progress.json", {"state": "completed", "arm": args.arm, "completed_epoch": len(history), "total_epochs": args.epochs, "best_epoch": best_epoch, "best_accuracy": best_accuracy, "test_evaluated": False})
     return report
@@ -365,6 +405,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("Epochs and batch size must be positive")
     if args.rgb_cache_dir and args.uint8_cache_dir:
         raise ValueError("Choose only one RGB cache format")
+    if args.action_taxonomy not in (None, "reduced-v1"):
+        raise ValueError(f"Unsupported action taxonomy: {args.action_taxonomy}")
+    taxonomy = build_reduced_action_taxonomy() if args.action_taxonomy else None
+    args.num_classes = len(taxonomy.output_class_ids) if taxonomy else 120
     if args.resume_from and (not args.uint8_cache_dir or not args.resume):
         raise ValueError("Checkpoint handoff requires --uint8-cache-dir and resume enabled")
     split_path = Path(args.split_manifest)
@@ -419,6 +463,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--upper-blocks", type=int, default=2)
+    parser.add_argument("--action-taxonomy", choices=("reduced-v1",), default=None)
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-alpha", type=float, default=32.0)
     parser.add_argument("--lora-dropout", type=float, default=0.05)

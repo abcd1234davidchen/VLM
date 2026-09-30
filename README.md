@@ -233,6 +233,14 @@ The completed 2026-08-26 search selected rank-16／alpha-32 MIT q/v LoRA with Lo
 
 The final artifacts are stored under `artifacts/xclip_lora_tuning/winner/`; `evaluation_results.json` contains the complete history and 20,880 test predictions, while `run_config.json` records the exact recipe and Git revision `9f1d5618f226fbef31c3f316`. This tuned CE-only model is the fixed RGB student control for the next SkeletonCLIP distillation experiment; future teacher-specific hyperparameters must still be selected without using test results.
 
+### Reduced Action Taxonomy
+
+The `reduced-v1` taxonomy retains 103 named NTU120 actions and maps 17 source actions into three internal irrelevant groups, which collapse to one public `irrelevant` label. Use `vlm experiment action-taxonomy` to aggregate an existing 120-class probability file without retraining, or pass `--action-taxonomy reduced-v1` to `vlm train xclip-lora` and `vlm train skeleton-phase3-gate1` for the direct 106-output controls.
+
+On the canonical validation split, inference-time aggregation of the existing 120-class upper-vision checkpoint reached 65.8565% exact and 67.8395% public accuracy. A direct 106-output upper-vision retrain reached 61.9830% exact accuracy, so the current deployment candidate remains the 120-class checkpoint plus probability aggregation; the direct checkpoint is retained only as a training control. The mapping, metrics, retained-action checks, and experiment decisions are documented in `docs/action-scope-review.md`.
+
+The next skeleton-guided vision candidate keeps the 120-class CE objective and tests motion-aware spatial attention that directly participates in frame pooling. Taxonomy aggregation remains an evaluation and inference operation so representation gains are not confused with label merging; see `docs/skeleton-guided-spatial-supervision-plan.md`.
+
 ## Archive and Legacy Code
 
 The complete pre-restructure standalone implementations are frozen under

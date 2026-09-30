@@ -20,6 +20,12 @@ from tqdm import tqdm
 from transformers import XCLIPModel
 from transformers import __version__ as transformers_version
 
+from vlm.action_taxonomy import (
+    RemappedLabelDataset,
+    annotate_output_prediction,
+    build_reduced_action_taxonomy,
+    public_prediction_metrics,
+)
 from vlm.data import (
     build_split,
     load_split_manifest,
@@ -474,6 +480,16 @@ def run_pipeline(
         raise ValueError(
             f"No supported class-labelled videos found in {videos_dir}"
         )
+    taxonomy = None
+    if args.action_taxonomy:
+        if args.action_taxonomy != "reduced-v1":
+            raise ValueError(f"Unsupported action taxonomy: {args.action_taxonomy}")
+        if tuple(class_ids) != tuple(range(1, 121)):
+            raise ValueError("reduced-v1 requires the complete ordered A001-A120 source classes")
+        if args.teacher_cache:
+            raise ValueError("Teacher-logit distillation is not defined for reduced-v1")
+        taxonomy = build_reduced_action_taxonomy()
+    output_class_ids = list(taxonomy.output_class_ids) if taxonomy else class_ids
     if loaded_split is not None and not evaluate_test:
         split = {
             name: [sample for sample in samples if sample.class_id in class_ids]
@@ -584,6 +600,15 @@ def run_pipeline(
         cached,
         preload=args.preload_cache,
     )
+    if taxonomy:
+        datasets = {
+            name: RemappedLabelDataset(
+                dataset,
+                [sample.class_id for sample in cached[name]],
+                taxonomy,
+            )
+            for name, dataset in datasets.items()
+        }
     canonical_train_dataset = datasets["train"]
     train_dataset = TrainingFeatureAugmentationDataset(
         canonical_train_dataset,
@@ -645,7 +670,7 @@ def run_pipeline(
         )
     model = XCLIPMITLoRAClassifier(
         xclip,
-        num_classes=len(class_ids),
+        num_classes=len(output_class_ids),
         head_dropout=args.dropout,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
@@ -673,7 +698,10 @@ def run_pipeline(
         epochs=args.epochs,
         warmup_epochs=args.warmup_epochs,
     )
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    criterion = nn.CrossEntropyLoss(
+        label_smoothing=args.label_smoothing,
+        weight=(taxonomy.loss_weights().to(device) if taxonomy else None),
+    )
     amp_enabled, amp_dtype = _amp_settings(device, args.amp)
     effective_batch_size = (
         args.batch_size * args.gradient_accumulation_steps
@@ -694,7 +722,9 @@ def run_pipeline(
             for key, value in vars(args).items()
             if key not in {"resume_training", "batch_progress", "cache_progress", "epoch_log_frequency"}
         },
-        "class_ids": class_ids,
+        "source_class_ids": class_ids,
+        "output_class_ids": output_class_ids,
+        "action_taxonomy": taxonomy.as_dict() if taxonomy else None,
         "split_manifest_sha256": (
             sha256_file(source_manifest) if source_manifest is not None else None
         ),
@@ -751,7 +781,7 @@ def run_pipeline(
             val_loader,
             cached["val"],
             device,
-            class_ids,
+            output_class_ids,
         )
         scheduler.step()
         improved = best_checkpoint.consider(
@@ -779,7 +809,7 @@ def run_pipeline(
                 train_eval_loader,
                 cached["train"],
                 device,
-                class_ids,
+                output_class_ids,
             )
         history.append(
             {
@@ -858,10 +888,25 @@ def run_pipeline(
     best_checkpoint.restore(model)
     validation_metrics, validation_predictions, validation_logits, validation_labels = (
         _evaluate_validation_detailed(
-            model, val_loader, cached["val"], device, class_ids
+            model, val_loader, cached["val"], device, output_class_ids
         )
     )
     validation_accuracy = validation_metrics["accuracy"]
+    taxonomy_validation_metrics = None
+    if taxonomy:
+        for row in validation_predictions:
+            row.update(
+                annotate_output_prediction(
+                    int(row["true_class_id"]),
+                    int(row["predicted_class_id"]),
+                    taxonomy,
+                )
+            )
+        taxonomy_validation_metrics = public_prediction_metrics(
+            [int(row["true_class_id"]) for row in validation_predictions],
+            [int(row["predicted_class_id"]) for row in validation_predictions],
+            taxonomy,
+        )
     final_accuracy: float | None = None
     predictions: list[dict[str, object]] | None = None
     if evaluate_test:
@@ -871,8 +916,17 @@ def run_pipeline(
             test_loader,
             cached["test"],
             device,
-            class_ids,
+            output_class_ids,
         )
+        if taxonomy:
+            for row in predictions:
+                row.update(
+                    annotate_output_prediction(
+                        int(row["true_class_id"]),
+                        int(row["predicted_class_id"]),
+                        taxonomy,
+                    )
+                )
     config = vars(args).copy()
     adapter_path = artifacts_dir / "xclip_lora_classifier.pt"
     merged_path = artifacts_dir / "xclip_lora_merged.pt"
@@ -882,7 +936,9 @@ def run_pipeline(
             "base_model_id": args.model_name,
             "lora_state_dict": lora_state_dict(model.mit),
             "classifier_state_dict": model.classifier.state_dict(),
-            "class_ids": class_ids,
+            "class_ids": output_class_ids,
+            "source_class_ids": class_ids,
+            "action_taxonomy": taxonomy.as_dict() if taxonomy else None,
             "config": config,
             "target_modules": model.target_modules,
             "best_epoch": best_checkpoint.epoch,
@@ -918,7 +974,9 @@ def run_pipeline(
             "base_model_id": args.model_name,
             "mit_state_dict": merged_base_state_dict(model.mit),
             "classifier_state_dict": model.classifier.state_dict(),
-            "class_ids": class_ids,
+            "class_ids": output_class_ids,
+            "source_class_ids": class_ids,
+            "action_taxonomy": taxonomy.as_dict() if taxonomy else None,
             "config": config,
             "best_epoch": best_checkpoint.epoch,
             "validation_accuracy": validation_accuracy,
@@ -939,6 +997,8 @@ def run_pipeline(
         "effective_batch_size": effective_batch_size,
         "target_modules": model.target_modules,
         "test_evaluated": evaluate_test,
+        "action_taxonomy": taxonomy.as_dict() if taxonomy else None,
+        "taxonomy_validation_metrics": taxonomy_validation_metrics,
     }
     results = {
         **extraction_summary,
@@ -957,6 +1017,8 @@ def run_pipeline(
         "amp_dtype": run_config["amp_dtype"],
         "micro_batch_size": args.batch_size,
         "effective_batch_size": effective_batch_size,
+        "action_taxonomy": taxonomy.as_dict() if taxonomy else None,
+        "taxonomy_validation_metrics": taxonomy_validation_metrics,
         "training_elapsed_seconds": time.perf_counter() - training_started,
         "peak_memory_allocated_bytes": (
             torch.cuda.max_memory_allocated(device)
@@ -1105,6 +1167,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument("--class-ids", type=int, nargs="+", default=None)
+    parser.add_argument(
+        "--action-taxonomy",
+        choices=("reduced-v1",),
+        default=None,
+        help="Remap A001-A120 into 103 named actions plus three internal irrelevant groups.",
+    )
     limits = parser.add_mutually_exclusive_group()
     limits.add_argument("--max-videos-per-class", type=int, default=None)
     limits.add_argument("--videos-per-split", type=int, default=None)

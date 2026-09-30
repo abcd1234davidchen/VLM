@@ -88,6 +88,11 @@ class TrainingArgumentTest(unittest.TestCase):
         self.assertEqual(lora_arguments.head_learning_rate, 8e-4)
         self.assertEqual(lora_arguments.gradient_accumulation_steps, 1)
         self.assertTrue(lora_arguments.amp)
+        self.assertIsNone(lora_arguments.action_taxonomy)
+        reduced = build_xclip_lora_parser().parse_args(
+            ["--action-taxonomy", "reduced-v1"]
+        )
+        self.assertEqual(reduced.action_taxonomy, "reduced-v1")
 
 
 if __name__ == "__main__":
