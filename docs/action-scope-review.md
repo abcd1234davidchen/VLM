@@ -74,7 +74,21 @@
 
 這三群應在內部維持不同negative pools與metrics，不建議直接訓練成單一、語意極度分散的`irrelevant` softmax class。產品輸出可以統一顯示`irrelevant`，但訓練時可使用hierarchical relevance head、grouped auxiliary labels或outlier exposure；實際設計需等使用者確認class scope後鎖定。
 
-## Implemented reduced-v1 contract
+## Current product-scope decision (2026-09-30)
+
+使用者明確決定不再保留以下七類作獨立產品輸出：A086 apply cream on hand、A034 rub two hands、A011 reading、A078 open bottle、A012 writing、A110 shoot with gun、A004 brush hair。這次決定覆寫A078與A086先前的「review／暫時保留」產品狀態，但不改寫歷史reduced-v1 taxonomy或實驗結果；A075仍未被排除，亦不自行排除A041、A049或其他未點名類別。
+
+加上先前接受的17類，產品scope目前累計24類不要求獨立named output。這不等於其餘96類都是醫療緊急事件，也不等於啟動新的96／100／106-output訓練。當前模型仍保留raw120 outputs；本次只記錄產品需求，尚未接入runtime output filtering或新的taxonomy CLI。
+
+「Discard」指移出獨立產品辨識要求，不刪除影片、source labels、logits或訓練／評估樣本。這些動作仍是attention-event的已知negative examples；計算事件分數時保留全部120類的softmax probability mass，不移除七類logits後重新normalize。特別是A004 brush hair曾被錯判為A044 head-touch/headache pose，應保留以測試誤報。
+
+A110被排除是因為本輪以醫療／照護注意事件為scope，不是將持槍動作判定為安全。[NTU作者分類](https://rose1.ntu.edu.sg/dataset/actionRecognition/)將它列為two-person interaction；資料集的medical conditions分類也不等同臨床緊急程度。
+
+方向建議為event-centric attention detection：沿用已選的A042–A048候選事件，分開評估falling、nausea/vomiting、失衡與各種不適姿態，不要求它們共用一個高優先警報門檻。主要指標改為event recall／漏報、precision、連續影片的false alarms per hour與偵測延遲；120-class accuracy保留作representation診斷，不再單獨決定照護產品是否成功。姿態辨識不是疼痛或疾病診斷。
+
+近期優先候選是完整validation確認固定whole＋zoom inference及各事件誤報，而非立即再跑spatial-supervision／KD pilot或新增reduced classifier。480-sample改善尚不能外推為full validation accuracy；後續仍需要連續正常活動與事件影片才能驗證警報。本次未啟動新訓練、完整validation或真實警報。
+
+## Implemented reduced-v1 contract (historical; unchanged)
 
 使用者接受的17個source actions被映射為三個internal outputs：`irrelevant_hand_sign`（A069、A070、A071、A072、A077、A093）、`irrelevant_fine_object`（A073、A074、A076、A081、A082、A083、A084、A091）與`irrelevant_specialized`（A065、A066、A094）。A075、A078與A086維持named outputs。模型因此有103個named outputs加3個internal irrelevant outputs，共106 outputs；三個internal outputs在public API均映射為`irrelevant`。OOD `unknown`仍是不同概念，本次未實作。
 
