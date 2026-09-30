@@ -1,5 +1,11 @@
 # TODO
 
+## Crop-aware 短 pilot（2026-09-30）
+
+- [x] Whole＋zoom完整validation已完成：58.92%→66.94%，無重訓；檢查代表性退步樣本，發現中央zoom可能裁掉倒地body。
+- [x] Crop-aware GPU smoke通過：warm-start parity、vision／MIT／classifier gradients與merged RGB-only strict reload通過。
+- [x] 短pilot與12,960筆validation已完成：whole58.96%、zoom64.31%、ensemble67.14%，ensemble net +26但attention349→343，inconclusive、不推薦替換。4,096筆train單pass，log與產物位於`artifacts/crop_aware_v1_pilot/`；未改threshold或discard-output、未讀test。詳見`docs/crop-aware-v1-plan.md`；尚未達到單次推論全量raw120超過70%。
+
 ## 資料切分與評估
 
 - [x] 依參與者（participant）切分 train／validation／test，而不是逐部影片
@@ -85,7 +91,10 @@
 - [x] Phase 3 將 LoRA 擴展到 XCLIP vision encoder 最後兩個 blocks，定位為 vision adaptation，而非直接證明 joint focus。120-class vision-only CE run 最佳 epoch 13 validation accuracy為`58.9198%`；完整validation logits已用於action taxonomy與subgroup分析，但仍缺同設定完整frozen control，因此不可宣稱Gate 1 paired comparison通過。詳見`docs/skeletonclip-phase3-4-roadmap.md`與`docs/xclip-vision-lora-validation-action-accuracy.md`。
 - [x] 完成`reduced-v1` action taxonomy與兩種驗證路徑：既有120-class upper-vision probabilities經aggregation得到`65.8565%` exact／`67.8395%` public validation accuracy；direct 106-output upper-vision retrain最佳為`61.9830%` exact，故短期部署候選維持120-class checkpoint加inference-time probability aggregation，direct checkpoint只保留為control。詳見`docs/action-scope-review.md`。
 - [ ] 只有研究目標需要 joint-focused RGB learning 時，才另行設計 patch-token 與 skeleton-to-RGB joint spatial supervision，並用 localization、joint-region masking／occlusion 驗證；不可由 class-level KD accuracy 推論模型更注意 joints。
-  - Phase 4 Gate 0–2 已完成：joint patch AP `0.956869`、CE probe `0.954959`、shuffled-joint `0.759423`，記錄為conditional spatial signal；分類accuracy無明顯改善，舊旁支occupancy probe為no-go。下一個候選改為identity-initialized、直接參與frame pooling的motion-aware spatial attention；維持120-class CE並只在evaluation／inference套用taxonomy aggregation。先跑mechanism smoke與單一快速pilot，通過後才補matched control或第二seed。詳見`docs/skeletonclip-phase4-gate2-results.md`與`docs/skeleton-guided-spatial-supervision-plan.md`。
+  - 兩次motion-pooling pilot已完成：joint adaptation為`58.11%`，frozen-baseline attention-only為`58.94%`，baseline為`58.92%`。第二輪僅多答對3／12,960個validation samples，未達confirmation門檻；不選winner。先前依使用者指示暫停並整理成果，之後使用者要求嘗試SKI方法，改以`docs/ski-semantic-v1-plan.md`的semantic distillation繼續。只看120-class；所有logs／checkpoints保留、未讀test。Motion-pooling不是SKI原版semantic distillation的重現。詳見`docs/spatial-attention-v2-results.md`與`docs/skeleton-guided-spatial-supervision-plan.md`。
+  - SKI-style semantic smoke通過，單一bounded pilot已在tmux完成：`58.98%`，比baseline多答對8／12,960，gain僅`+0.0617` percentage points；paired淨增19、unpaired淨減11，判為inconclusive。這是supervised120／partial59改版，不是官方zero-shot原版；不選winner、不自動放大full training。詳見`docs/ski-semantic-v1-plan.md`。
+  - Direct-decision KD＋unpaired RGB retention的smoke通過、單一tmux pilot完成：`58.96%`，overall net +5、paired -15、unpaired +20；MacroF1下降，未達overall門檻，inconclusive、不選winner、不自動放大budget。Unpaired validation T2 KL由前輪`0.06703`降至`0.03393`，不能據多項改动宣稱anchor的因果貢獻。Logs／checkpoints完整保留、未讀test；設計與分析見`docs/decision-distillation-v1-plan.md`，不是官方SKI重現。
+  - RGB-input／alert診斷已完成，無訓練：固定480樣本的whole為`60.83%`、central zoom70為`68.75%`、whole＋zoom mean為`72.29%`，不能宣稱全量突破70%。使用者核准後，48筆GPU smoke與baseline parity通過，12,960筆full validation已完成：whole58.92%、zoom63.91%、whole＋zoom66.94%；log與結果位於`artifacts/whole_zoom_validation_v1/`。全部120類含24個產品排除類別仍保留作negative examples，A042–A048 thresholds只作exploratory internal evaluation，不啟用live alarms；詳見`docs/rgb-input-and-alert-audit.md`。
 - [x] Distillation 前先單獨評估 SkeletonCLIP teacher，並以 NTU sample identity 精確對齊 RGB 與 skeleton。Teacher 不得使用 validation／test labels 訓練，最終 validation／test 必須以 RGB student 單獨推理。Phase 1 Gate 3 完成 teacher 比較，Phase 2 Gate 0–1 完成 identity lock 與 45,236 筆 paired train teacher-logit cache。
 - [x] LoRA training 從獨立的 pre-MIT `[8, 512]` cache 執行 MIT forward／backward，不沿用會繞過 MIT 的 frozen post-MIT cache；完成 adapter／merged checkpoints、trainable-parameter audit 與 merge parity validation。
 - [ ] 以 merged checkpoint 重建可直接從 RGB frames 執行的完整 inference path 與 evaluation cache，並驗證其結果和目前 pre-MIT cached evaluation 一致。
