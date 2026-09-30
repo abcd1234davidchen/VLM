@@ -40,7 +40,7 @@ def color_joints(path: Path, wanted: set[int]) -> tuple[int, dict[int, list[dict
                 for joint in range(count):
                     fields = _parse_floats(stream, path=path, context=f"frame {frame} body {body} joint {joint}", minimum_fields=12)
                     if frame in wanted:
-                        joints.append({"joint": joint, "x": fields[5], "y": fields[6], "state": int(fields[11])})
+                        joints.append({"joint": joint, "x": fields[5], "y": fields[6], "xyz": fields[:3], "state": int(fields[11])})
                 if frame in wanted:
                     bodies.append({"body_id": body_id, "body_state": int(metadata[8]), "joints": joints})
             if frame in wanted:
