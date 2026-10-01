@@ -152,8 +152,12 @@ def run(args):
     if len(index) != 12960 or set(index) != {_sample_id(row["video_path"]) for row in split["val"]}:
         raise ValueError("Baseline IDs differ from validation")
     source = torch.load(args.adapter, map_location="cpu", weights_only=False)
-    if (source["identity"]["split_sha256"] != sha256_file(args.split_manifest)
-            or source["identity"]["model_revision"] != MODEL_REVISION or source["identity"]["test_evaluated"] is not False):
+    # The adapter's own identity selects the XCLIP backbone (patch32 or patch16).
+    model_name = source["identity"].get("model_name", MODEL)
+    model_revision = source["identity"]["model_revision"]
+    if model_name == MODEL and model_revision != MODEL_REVISION:
+        raise ValueError("Baseline checkpoint provenance changed")
+    if source["identity"]["split_sha256"] != sha256_file(args.split_manifest) or source["identity"]["test_evaluated"] is not False:
         raise ValueError("Baseline checkpoint provenance changed")
     if args.samples < 1 or args.samples > 12960 or not 0 <= args.workers <= 24:
         raise ValueError("Invalid sample count or workers (maximum24)")
@@ -166,6 +170,7 @@ def run(args):
         raise ValueError("Baseline labels differ")
     root.mkdir(parents=True, exist_ok=True)
     lock = {"purpose": "read-only inference diagnostic; no optimizer", "samples": len(rows), "sample_ids": ids,
+            "model_name": model_name, "model_revision": model_revision,
             "views": list(views), "view_policy": "whole-video uniform8; fixed70%-short-side center zoom; half-clip windows only if requested; not person detection",
             "ensemble_policy": "equal mean whole+zoom; equal mean temporal windows only if requested",
             "source_sha256": {"runner": sha256_file(Path(__file__)), "adapter": sha256_file(args.adapter),
@@ -182,8 +187,8 @@ def run(args):
     if not torch.cuda.is_available():
         raise RuntimeError("GPU needed for bounded RGB-view diagnostic")
     torch.set_num_threads(8)
-    processor = XCLIPProcessor.from_pretrained(MODEL, revision=MODEL_REVISION, local_files_only=True)
-    model = XCLIPVisionLoRAClassifier(XCLIPModel.from_pretrained(MODEL, revision=MODEL_REVISION, local_files_only=True),
+    processor = XCLIPProcessor.from_pretrained(model_name, revision=model_revision, local_files_only=True)
+    model = XCLIPVisionLoRAClassifier(XCLIPModel.from_pretrained(model_name, revision=model_revision, local_files_only=True),
                                      num_classes=120, head_dropout=.25, feature_noise_std=.01,
                                      upper_blocks=2, lora_rank=16, lora_alpha=32, lora_dropout=.05).cuda().requires_grad_(False).eval()
     if model.target_modules != source["model"]["target_modules"]:

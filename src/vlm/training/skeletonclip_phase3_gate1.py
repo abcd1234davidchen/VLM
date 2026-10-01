@@ -262,9 +262,16 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
     device = torch.device("cuda:0")
     set_seed(args.seed)
     processor = XCLIPProcessor.from_pretrained(args.model_name, revision=args.model_revision, local_files_only=True)
-    cache = ProcessedRGBCache(Path(args.rgb_cache_dir), processor, model_name=args.model_name, model_revision=args.model_revision) if args.rgb_cache_dir else None
+    cache_model_name, cache_model_revision = args.model_name, args.model_revision
+    if args.cache_model_name:
+        # Reuse another checkpoint's processed-pixel cache only when preprocessing is identical.
+        cache_model_name, cache_model_revision = args.cache_model_name, args.cache_model_revision
+        cache_processor = XCLIPProcessor.from_pretrained(cache_model_name, revision=cache_model_revision, local_files_only=True)
+        if cache_processor.image_processor.to_dict() != processor.image_processor.to_dict():
+            raise ValueError("Cache model preprocessing differs from the trained model")
+    cache = ProcessedRGBCache(Path(args.rgb_cache_dir), processor, model_name=cache_model_name, model_revision=cache_model_revision) if args.rgb_cache_dir else None
     if args.uint8_cache_dir:
-        cache = ProcessedUInt8Cache(Path(args.uint8_cache_dir), processor, model_name=args.model_name, model_revision=args.model_revision)
+        cache = ProcessedUInt8Cache(Path(args.uint8_cache_dir), processor, model_name=cache_model_name, model_revision=cache_model_revision)
     taxonomy = build_reduced_action_taxonomy() if args.action_taxonomy else None
     train_loader = _loader(RGBVideoDataset(train_rows, processor, cache, taxonomy), args, train=True)
     val_loader = _loader(RGBVideoDataset(val_rows, processor, cache, taxonomy), args, train=False)
@@ -322,7 +329,9 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
     torch.cuda.reset_peak_memory_stats(device)
     started = time.perf_counter()
     class_weights = taxonomy.loss_weights().to(device) if taxonomy else None
-    for epoch in range(start_epoch, args.epochs + 1):
+    # Early stopping keeps the full-length cosine schedule, so per-epoch metrics stay comparable to a full run.
+    last_epoch = args.stop_after_epoch or args.epochs
+    for epoch in range(start_epoch, last_epoch + 1):
         train_loss, train_count = _train_epoch(model, train_loader, optimizer, scaler, args, device, epoch=epoch, output=output, class_weights=class_weights)
         if args.max_train_batches is None and train_count != len(train_rows):
             raise RuntimeError(f"Expected {len(train_rows)} train samples, got {train_count}")
@@ -392,7 +401,7 @@ def run_arm(args: argparse.Namespace, train_rows: list[dict[str, object]], val_r
                 **annotate_output_prediction(source_id, predicted_id, taxonomy),
             })
         _atomic_json(output / "validation_predictions.json", predictions)
-    report = {"status": "completed", "arm": args.arm, "initial_logits_sha256": initial_logits_sha256, "best_epoch": best_epoch, "best_validation_accuracy": best_accuracy, "taxonomy_validation_metrics": taxonomy_metrics, "action_taxonomy": taxonomy.as_dict() if taxonomy else None, "trainable_parameter_audit": audit, "history": history, "peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device), "merge_max_abs_diff": parity, "merged_reload_max_abs_diff": reload_error, "test_evaluated": False}
+    report = {"status": "completed", "arm": args.arm, "stopped_after_epoch": len(history) if last_epoch < args.epochs else None, "initial_logits_sha256": initial_logits_sha256, "best_epoch": best_epoch, "best_validation_accuracy": best_accuracy, "taxonomy_validation_metrics": taxonomy_metrics, "action_taxonomy": taxonomy.as_dict() if taxonomy else None, "trainable_parameter_audit": audit, "history": history, "peak_memory_allocated_bytes": torch.cuda.max_memory_allocated(device), "merge_max_abs_diff": parity, "merged_reload_max_abs_diff": reload_error, "test_evaluated": False}
     _atomic_json(output / "run_report.json", report)
     _atomic_json(output / "progress.json", {"state": "completed", "arm": args.arm, "completed_epoch": len(history), "total_epochs": args.epochs, "best_epoch": best_epoch, "best_accuracy": best_accuracy, "test_evaluated": False})
     return report
@@ -409,6 +418,10 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError(f"Unsupported action taxonomy: {args.action_taxonomy}")
     taxonomy = build_reduced_action_taxonomy() if args.action_taxonomy else None
     args.num_classes = len(taxonomy.output_class_ids) if taxonomy else 120
+    if args.stop_after_epoch is not None and not 1 <= args.stop_after_epoch <= args.epochs:
+        raise ValueError("--stop-after-epoch must be within [1, epochs]")
+    if bool(args.cache_model_name) != bool(args.cache_model_revision):
+        raise ValueError("--cache-model-name and --cache-model-revision must be given together")
     if args.resume_from and (not args.uint8_cache_dir or not args.resume):
         raise ValueError("Checkpoint handoff requires --uint8-cache-dir and resume enabled")
     split_path = Path(args.split_manifest)
@@ -431,7 +444,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         if winning.get("batch_size") != args.batch_size and not args.allow_batch_size_change:
             raise ValueError("Batch size differs from the Phase 2 winning recipe; pass --allow-batch-size-change to lock a new experiment")
     subset_ids = [Path(str(row["video_path"])).stem.removesuffix("_rgb") for row in train_rows]
-    identity = {"schema_version": 1, "model_name": args.model_name, "model_revision": args.model_revision, "split_sha256": sha256_file(split_path), "winning_config_sha256": sha256_file(winning_path), "init_adapter_sha256": sha256_file(Path(args.init_adapter)) if args.init_adapter else None, "train_subset_sha256": hashlib.sha256("\n".join(subset_ids).encode()).hexdigest(), "train_samples": len(train_rows), "validation_samples": len(val_rows), "source_sha256": sha256_file(Path(__file__)), "continued_from_checkpoint_sha256": sha256_file(Path(args.resume_from)) if args.resume_from else None, "config": {key: value for key, value in vars(args).items() if key not in {"arm", "artifacts_dir", "resume", "resume_from"}}, "test_evaluated": False}
+    identity = {"schema_version": 1, "model_name": args.model_name, "model_revision": args.model_revision, "split_sha256": sha256_file(split_path), "winning_config_sha256": sha256_file(winning_path), "init_adapter_sha256": sha256_file(Path(args.init_adapter)) if args.init_adapter else None, "train_subset_sha256": hashlib.sha256("\n".join(subset_ids).encode()).hexdigest(), "train_samples": len(train_rows), "validation_samples": len(val_rows), "source_sha256": sha256_file(Path(__file__)), "continued_from_checkpoint_sha256": sha256_file(Path(args.resume_from)) if args.resume_from else None, "config": {key: value for key, value in vars(args).items() if key not in {"arm", "artifacts_dir", "resume", "resume_from", "stop_after_epoch"}}, "test_evaluated": False}
     arms = ("frozen", "vision") if args.arm == "both" else (args.arm,)
     results = {arm: run_arm(argparse.Namespace(**{**vars(args), "arm": arm}), train_rows, val_rows, identity) for arm in arms}
     if len(results) == 2:
@@ -458,6 +471,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--uint8-cache-dir", default=None, help="Exact processed RGB cache using about 1.2 MB per video")
     parser.add_argument("--resume-from", default=None, help="Handoff a completed epoch checkpoint when switching only to the uint8 RGB cache")
     parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--stop-after-epoch", type=int, default=None, help="Stop early while keeping the --epochs cosine schedule; a later resume can continue the same run")
+    parser.add_argument("--cache-model-name", default=None, help="Reuse the processed RGB cache keyed by this model when its preprocessing is identical")
+    parser.add_argument("--cache-model-revision", default=None)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--allow-batch-size-change", action="store_true", help="Explicitly lock a new batch size with a different optimizer-step budget")
     parser.add_argument("--workers", type=int, default=4)
