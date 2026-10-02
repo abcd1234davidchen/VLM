@@ -27,7 +27,7 @@ from vlm.xclip_features import FRAME_SAMPLING_STRATEGY
 
 VIEWS = ("whole", "early", "middle", "late", "center_zoom70")
 ATTENTION_IDS = tuple(range(42, 49))
-PRODUCT_EXCLUDED_IDS = tuple(sorted({cls for group in IRRELEVANT_GROUPS.values() for cls in group} | {86, 34, 11, 78, 12, 110, 4}))
+PRODUCT_EXCLUDED_IDS = tuple(sorted({cls for group in IRRELEVANT_GROUPS.values() for cls in group} | {86, 34, 11, 78, 12, 110, 4, 30, 89, 90, 67, 10, 32, 79, 23, 107, 106}))
 
 
 def action_names(path: Path) -> dict[int, str]:
@@ -227,7 +227,7 @@ def run(args):
     ignored = torch.tensor([cls - 1 for group in IRRELEVANT_GROUPS.values() for cls in group])
     masks = {"A001_A060": labels < 60, "A061_A120": labels >= 60, "previously_ignored": torch.isin(labels, ignored),
              "attention_A042_A048": torch.isin(labels, torch.tensor([cls - 1 for cls in ATTENTION_IDS])),
-             "product_excluded24": torch.isin(labels, torch.tensor([cls - 1 for cls in PRODUCT_EXCLUDED_IDS]))}
+             f"product_excluded{len(PRODUCT_EXCLUDED_IDS)}": torch.isin(labels, torch.tensor([cls - 1 for cls in PRODUCT_EXCLUDED_IDS]))}
     results = {}
     for name, probs in probabilities.items():
         ok = probs.argmax(-1).eq(labels)

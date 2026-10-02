@@ -196,7 +196,7 @@ def run(args):
         results[view] = {"accuracy": float(ok.float().mean()), "original_accuracy": float(prior.float().mean()),
                          "correct": int(ok.sum()), "fixed": int((ok & ~prior).sum()), "regressed": int((~ok & prior).sum()),
                          "attention_correct": int(ok[attention].sum()), "original_attention_correct": int(prior[attention].sum()),
-                         "attention_samples": int(attention.sum()), "excluded24_correct": int(ok[excluded].sum())}
+                         "attention_samples": int(attention.sum()), f"excluded{len(PRODUCT_EXCLUDED_IDS)}_correct": int(ok[excluded].sum())}
         if args.mode == "pilot":
             write_json(root / f"{view}_confusion_alert_report.json", saved_prediction_audit({"logits": p.clamp_min(torch.finfo(p.dtype).tiny).log(), "labels": labels, "sample_ids": ids}, names))
     pixels, _ = next(iter(validation))
