@@ -1,6 +1,6 @@
 # Patch16 resolution plan
 
-日期：2026-10-01。狀態：proposal；本機 CPU 檢查已通過，尚未在 GPU 上執行。
+日期：2026-10-01。狀態：Stage 0–2 已完成（2026-10-02）；patch16 單次 whole 推論 validation accuracy 由 `58.92%` 提升到 `74.12%`，whole＋zoom 為 `80.96%`。結果見第 8 節；尚未讀 test、只有 seed 42。
 
 ## 1. 動機
 
@@ -81,3 +81,46 @@ Stage 2 whole＋zoom validation：
 ## 7. 已完成的本機檢查
 
 在本機 CPU 以隨機輸入 `[2, 8, 3, 224, 224]` 分別建立 patch32 與 patch16 的 `XCLIPVisionLoRAClassifier`：兩者皆為 6 個 LoRA targets，vision／MIT／classifier 三組參數都有非零 gradient，merge 與 strict reload 的最大誤差分別為 `1.67e-6`（patch32）與 `1.31e-6`（patch16）。兩個 processor 的 `image_processor.to_dict()` 完全相同。
+
+## 8. 結果
+
+所有數字皆為 seed 42、完整 12,960 筆 canonical validation，未讀 test。Artifacts 位於 `artifacts/patch16_resolution/`。
+
+### Stage 0：GPU smoke
+
+RTX 2080 Ti 上 patch32 與 patch16 各跑 100 個 training batches 與 10 個 validation batches，兩者皆正常結束。Trainable 參數同為 193,656；merge 與 merged RGB-only strict reload 最大誤差分別為 `1.43e-6` 與 `1.91e-6`；peak memory 為 1.33 GB 與 2.93 GB。前 100 個 batches 的累計吞吐量為 51.4 與 45.3 examples/s，暖機期間主要受資料讀取限制，因此不能代表穩定速度。
+
+### Stage 1：patch16 pilot
+
+完整 pilot 以 baseline 相同配方（60-epoch cosine、batch 16、seed 42、AMP）跑到第 20 個 epoch 停止，總時間 10.55 小時，穩定吞吐量約 50 examples/s，每個 epoch 約 32 分鐘，約為 baseline 的 3 倍。最佳 checkpoint 為 epoch 20，validation accuracy `74.12%`、macro-F1 `75.45%`、NLL `0.931`；merge 與 merged RGB-only strict reload 最大誤差皆為 `8.58e-6`。
+
+| Epoch | 1 | 2 | 3 | 5 | 9 | 13 | 14 | 17 | 20 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Patch16 | 60.37% | 64.63% | 67.01% | 70.68% | 72.75% | 73.63% | 73.97% | 73.51% | 74.12% |
+| Baseline patch32 | — | 47.72% | 51.09% | 55.57% | 57.10% | 58.92% | 57.85% | 58.45% | 58.02% |
+
+Baseline 數字取自原 run 的 `train.log`（該 run 在 epoch 38 中斷，最佳為 epoch 13 的 `58.92%`；epoch 1 未記錄 validation）。Patch16 在 epoch 1 已超過 baseline 最佳值，epoch 5 的早期門檻（領先至少 `1.0` point）與最終門檻（高出至少 `3.0` points）都大幅通過。Epoch 14 之後曲線大致持平在 73.1%–74.1%。
+
+### Stage 2：whole＋zoom validation
+
+以 epoch 20 best adapter 在完整 validation 上推論；whole view 與訓練時保存的 logits 一致（最大誤差 `1.61e-4`，argmax 零差異）。
+
+| View | Patch32 | Patch16 | 差距（points） |
+| --- | ---: | ---: | ---: |
+| Whole（單次推論） | 58.92% | 74.12% | +15.20 |
+| Center zoom70（單次推論） | 63.91% | 78.97% | +15.06 |
+| Whole＋zoom 機率平均（兩次推論） | 66.94% | 80.96% | +14.02 |
+
+| Subgroup（patch16 correct／n） | Whole | Zoom70 | Whole＋zoom |
+| --- | ---: | ---: | ---: |
+| A001–A060 | 3,457／4,320 | 3,585／4,320 | 3,683／4,320 |
+| A061–A120 | 6,149／8,640 | 6,650／8,640 | 6,809／8,640 |
+| Previously ignored（17 類） | 1,299／2,448 | 1,579／2,448 | 1,570／2,448 |
+| Attention A042–A048 | 358／504 | 383／504 | 385／504 |
+| Product excluded（24 類） | 1,700／3,168 | 2,073／3,168 | 2,066／3,168 |
+
+A042–A048 的 top-1 correct 由 patch32 的 whole `303`、ensemble `349` 提升到 patch16 的 whole `358`、ensemble `385`，沒有退步。Patch16 下 zoom 仍再提升約 4.9 points、ensemble 約 6.8 points，代表解析度收益尚未飽和；但 ensemble 需要兩次 forward，中央 zoom 也仍有裁掉倒地人物的風險（見 `docs/crop-aware-v1-plan.md`）。
+
+### 判讀
+
+換成 patch16 是目前所有方法中收益最大的一項，單次推論即超過先前 patch32 ensemble。這支持「錯誤主要來自 RGB 空間解析度」的判斷。下一步候選依序為：(1) 第二個 seed 確認可重現性；(2) 在 patch16 上做 crop-aware 或 person-aware 訓練，把 zoom 的收益學進單次推論；(3) 評估 `xclip-large-patch14`。Test 仍保留到配方鎖定後只評估一次。
