@@ -13,13 +13,21 @@ from vlm.reporting import write_json
 from vlm.skeleton_teacher_cache import sha256_file
 from vlm.training.hand_roi_followup import (
     ADAPTER, MODEL, MODEL_REVISION, REFERENCE, SPLIT, evaluate_metrics,
-    load_model, make_loader, sample_id,
+    load_model, make_loader, sample_id, compare_local_experts,
 )
 from vlm.training.rgb_input_audit import PRODUCT_EXCLUDED_IDS
 
 
 def run(args):
     torch.set_num_threads(2)
+    if not torch.cuda.is_available():
+        raise RuntimeError('GPU required')
+    upper_blocks = getattr(args, 'upper_blocks', 2)
+    vision_layout = getattr(args, 'vision_layout', 'upper')
+    middle = vision_layout == 'middle4'
+    alternative = vision_layout != 'upper'
+    if alternative and upper_blocks != 4:
+        raise ValueError('Alternative layouts require --upper-blocks 4')
     root = args.artifacts_dir
     if (root / 'experiment_lock.json').exists():
         raise ValueError('Use a fresh evaluation directory')
@@ -46,8 +54,21 @@ def run(args):
     identity = source['identity']
     if identity['init_adapter_sha256'] != sha256_file(ADAPTER) or identity['split_sha256'] != sha256_file(SPLIT) or identity['model_revision'] != MODEL_REVISION or identity['test_evaluated'] is not False:
         raise ValueError('Local adapter provenance mismatch')
+    if identity.get('upper_blocks', 2) != upper_blocks or identity.get('vision_layout', 'upper') != vision_layout:
+        raise ValueError('Local adapter depth mismatch')
+    if upper_blocks == 4 and identity.get('optimizer_steps') != 570:
+        raise ValueError('Upper4 requires exactly 570 optimizer steps')
     if identity['train_samples'] != 2280 or identity['epochs'] != 1:
         raise ValueError('Expected the completed single-pass pilot')
+    if upper_blocks == 4:
+        pilot_report = json.loads((pilot_root / 'report.json').read_text())
+        if pilot_report.get('status') != 'pilot_complete' or pilot_report.get('optimizer_steps') != 570:
+            raise ValueError('Upper4 pilot has not completed all checks')
+        for name, path in {'runner': Path('src/vlm/training/hand_roi_followup.py'),
+                           'lora': Path('src/vlm/models/lora.py'),
+                           'vision_model': Path('src/vlm/models/xclip_vision_lora.py')}.items():
+            if sha256_file(path) != identity['source_sha256'][name]:
+                raise ValueError('Pilot source changed before evaluation')
     reference = torch.load(REFERENCE, map_location='cpu', weights_only=True)
     index = {sid: i for i, sid in enumerate(reference['sample_ids'])}
     selected = torch.tensor([index[sid] for sid in ids])
@@ -67,18 +88,31 @@ def run(args):
     hashes = {name: sha256_file(path) for name, path in {
         'runner': Path(__file__), 'shared_runner': Path('src/vlm/training/hand_roi_followup.py'),
         'local_adapter': args.local_adapter, 'baseline_adapter': ADAPTER, 'reference': REFERENCE,
+        'lora': Path('src/vlm/models/lora.py'), 'vision_model': Path('src/vlm/models/xclip_vision_lora.py'),
         'split': SPLIT, 'selection': args.selection, 'crops': args.crops,
         'pilot_predictions': pilot_path, 'pilot_crop_manifest': pilot_crops_path,
     }.items()}
+    comparison_path = Path('artifacts/hand_roi_full86_v1/evaluation/view_predictions.pt')
+    if upper_blocks == 4:
+        hashes['upper2_predictions'] = sha256_file(comparison_path)
+    upper4_comparison_path = Path('artifacts/hand_roi_upper4_v1/evaluation/view_predictions.pt')
+    if alternative:
+        hashes['upper4_predictions'] = sha256_file(upper4_comparison_path)
+    middle4_comparison_path = Path('artifacts/hand_roi_middle4_v1/evaluation/view_predictions.pt')
+    if vision_layout == 'mixed4':
+        hashes['middle4_predictions'] = sha256_file(middle4_comparison_path)
     root.mkdir(parents=True, exist_ok=True)
     write_json(root / 'experiment_lock.json', {
-        'sample_ids': ids, 'source_sha256': hashes, 'training': False, 'test_evaluated': False,
+        'vision_layout': vision_layout, 'upper_blocks': upper_blocks, 'sample_ids': ids, 'source_sha256': hashes, 'training': False, 'test_evaluated': False,
         'policy': 'All retained86 canonical validation, keep120 logits; fixed equal whole+zoom+trained interaction probability mean',
         'excluded_source_ids': PRODUCT_EXCLUDED_IDS, 'reused_predictions': len(outputs),
         'batch_size': args.batch_size, 'workers': args.workers,
     })
     (root / 'runner_snapshot.py').write_text(Path(__file__).read_text())
     (root / 'shared_runner_snapshot.py').write_text(Path('src/vlm/training/hand_roi_followup.py').read_text())
+    for name in ('lora', 'vision_model'):
+        path = Path('src/vlm/models/lora.py' if name == 'lora' else 'src/vlm/models/xclip_vision_lora.py')
+        (root / f'{name}_snapshot.py').write_text(path.read_text())
     started = time.monotonic()
 
     def progress(state, **fields):
@@ -88,7 +122,7 @@ def run(args):
         print(json.dumps(value), flush=True)
 
     processor = XCLIPProcessor.from_pretrained(MODEL, revision=MODEL_REVISION, local_files_only=True)
-    model = load_model(source)
+    model = load_model(source, upper_blocks=upper_blocks, vision_layout=vision_layout)
     check_ids = list(outputs)[:args.batch_size]
     lookup = {sample_id(r): r for r in rows}
     with torch.inference_mode():
@@ -116,7 +150,28 @@ def run(args):
     report.pop('training_gate')
     report['prior_diagnostic_only'] = report.pop('prior176_only')
     report['not_in_prior_diagnostic'] = report.pop('new_samples_only')
-    report.update({'status': 'complete', 'training': False, 'test_evaluated': False,
+    if upper_blocks == 4:
+        previous = torch.load(comparison_path, map_location='cpu', weights_only=True)
+        report['vs_upper2_local'] = compare_local_experts(probabilities, labels, ids, previous, set(pilot['sample_ids']))
+        score = report['vs_upper2_local']['retained86']
+        if score['before_correct'] != 7277:
+            raise ValueError('Expected canonical upper2 baseline 7277/8640')
+        report['decision'] = 'improved' if score['after_correct'] > 7277 else 'no_additional_gain_stop'
+        if sha256_file(comparison_path) != hashes['upper2_predictions']:
+            raise RuntimeError('Upper2 predictions changed during evaluation')
+    if alternative:
+        previous = torch.load(upper4_comparison_path, map_location='cpu', weights_only=True)
+        report['vs_upper4_local'] = compare_local_experts(probabilities, labels, ids, previous, set(pilot['sample_ids']))
+        score = report['vs_upper4_local']['retained86']
+        if score['before_correct'] != 7305 or sha256_file(upper4_comparison_path) != hashes['upper4_predictions']:
+            raise ValueError('Upper4 comparison mismatch or changed')
+        report['decision_vs_upper4'] = 'improved' if score['net'] > 0 else 'no_additional_gain_stop'
+    if vision_layout == 'mixed4':
+        previous = torch.load(middle4_comparison_path, map_location='cpu', weights_only=True)
+        report['vs_middle4_local'] = compare_local_experts(probabilities, labels, ids, previous, set(pilot['sample_ids']))
+        if report['vs_middle4_local']['retained86']['before_correct'] != 7291 or sha256_file(middle4_comparison_path) != hashes['middle4_predictions']:
+            raise ValueError('Middle4 comparison mismatch or changed')
+    report.update({'vision_layout': vision_layout, 'upper_blocks': upper_blocks, 'status': 'complete', 'training': False, 'test_evaluated': False,
                    'samples': len(ids), 'source_sha256': hashes, 'seconds': time.monotonic() - started,
                    'cached_parity_max_error': error, 'fallbacks': sum(c['fallback'] is not None for c in crops.values())})
     torch.save({'sample_ids': ids, 'labels': labels, 'logits': {'interaction': logits},
@@ -124,6 +179,8 @@ def run(args):
     if any(sha256_file(path) != hashes[name] for name, path in {
         'local_adapter': args.local_adapter, 'baseline_adapter': ADAPTER,
         'reference': REFERENCE, 'split': SPLIT, 'selection': args.selection, 'crops': args.crops,
+        'runner': Path(__file__), 'shared_runner': Path('src/vlm/training/hand_roi_followup.py'),
+        'lora': Path('src/vlm/models/lora.py'), 'vision_model': Path('src/vlm/models/xclip_vision_lora.py'),
     }.items()):
         raise RuntimeError('Input changed during evaluation')
     write_json(root / 'report.json', report)
@@ -154,12 +211,39 @@ def run(args):
               f"完整保留 86 類：{before['correct']}/{before['samples']} → {after['correct']}/{after['samples']}，變動 {100*(after['accuracy']-before['accuracy']):+.4f} 個百分點，修正 {after['fixed']} 筆、退步 {after['regressed']} 筆。這次評估不自動替換部署模型。", '',
               f"RGB 定位 fallback {report['fallbacks']} 支，全部保留；局部 checkpoint 重載與快取 prediction 最大差異 {error:.8g}。原 checkpoint 與所有輸入的 SHA256 在評估結束時再次驗證。", '',
               f'Artifacts：`{root}`；定位 metadata：`{args.crops}`。', '']
-    Path('docs/hand-roi-full86-v1-results.md').write_text('\n'.join(lines))
+    if upper_blocks == 4:
+        candidate = vision_layout if alternative else 'upper4'
+        lines[0] = f'# RGB interaction {candidate}：完整 86 類 validation'
+        lines += ['', '## 與既有兩層 local expert 比較', '',
+                  f'| 群組／類別 | upper2 | {candidate} | 修正 | 退步 | 淨變動 |',
+                  '|---|---:|---:|---:|---:|---:|']
+        for name, value in report['vs_upper2_local'].items():
+            lines.append(f"| {name} | {value['before_correct']}/{value['samples']} | {value['after_correct']}/{value['samples']} | {value['fixed']} | {value['regressed']} | {value['net']:+d} |")
+        lines += ['', f"判讀：`{report['decision']}`；不自動替換部署模型。", '']
+    if alternative:
+        lines[0] = f'# RGB interaction {candidate}：完整 86 類 validation'
+        lines += ['', '## 與最後四層 local expert 比較', '',
+                  f'| 群組／類別 | upper4 | {candidate} | 修正 | 退步 | 淨變動 |',
+                  '|---|---:|---:|---:|---:|---:|']
+        for name, value in report['vs_upper4_local'].items():
+            lines.append(f"| {name} | {value['before_correct']}/{value['samples']} | {value['after_correct']}/{value['samples']} | {value['fixed']} | {value['regressed']} | {value['net']:+d} |")
+        lines += ['', f"對upper4判讀：`{report['decision_vs_upper4']}`；不自動替換部署模型。", '']
+    if vision_layout == 'mixed4':
+        lines += ['', '## 與middle4比較', '', '| 群組／類別 | middle4 | mixed4 | 修正 | 退步 | 淨變動 |', '|---|---:|---:|---:|---:|---:|']
+        for name, value in report['vs_middle4_local'].items():
+            lines.append(f"| {name} | {value['before_correct']}/{value['samples']} | {value['after_correct']}/{value['samples']} | {value['fixed']} | {value['regressed']} | {value['net']:+d} |")
+    report_doc = getattr(args, 'report_doc', None)
+    if report_doc is None:
+        report_doc = Path('docs/hand-roi-mixed4-v1-results.md' if vision_layout == 'mixed4' else 'docs/hand-roi-middle4-v1-results.md' if middle else 'docs/hand-roi-upper4-v1-results.md' if upper_blocks == 4 else 'docs/hand-roi-full86-v1-results.md')
+    report_doc.write_text('\n'.join(lines))
     progress('complete', retained86=report['all_selected']['retained86'])
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--vision-layout', choices=('upper', 'middle4', 'mixed4'), default='upper')
+    parser.add_argument('--upper-blocks', type=int, choices=(2, 4), default=2)
+    parser.add_argument('--report-doc', type=Path)
     parser.add_argument('--selection', type=Path, default=Path('artifacts/hand_roi_full86_v1/val_selection.json'))
     parser.add_argument('--crops', type=Path, default=Path('artifacts/hand_roi_full86_v1/localization/crop_manifest.json'))
     parser.add_argument('--local-adapter', type=Path, default=Path('artifacts/hand_roi_followup_v1/pilot/local_adapter.pt'))

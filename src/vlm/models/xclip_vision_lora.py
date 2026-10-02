@@ -77,12 +77,14 @@ class XCLIPVisionLoRAClassifier(XCLIPVisionClassifier):
         lora_alpha: float,
         lora_dropout: float,
         feature_noise_std: float = 0.0,
+        vision_block_indices: tuple[int, ...] | None = None,
     ) -> None:
         super().__init__(xclip, num_classes=num_classes, head_dropout=head_dropout, feature_noise_std=feature_noise_std)
         self.target_modules = (
             inject_vision_attention_lora(
                 self.vision_model,
                 upper_blocks=upper_blocks,
+                block_indices=vision_block_indices,
                 rank=lora_rank,
                 alpha=lora_alpha,
                 dropout=lora_dropout,

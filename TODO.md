@@ -2,6 +2,15 @@
 
 ## 手部與互動區域推理診斷（2026-10-01）
 
+- [x] 完成RGB improvement series：融合→9,120筆／2,280steps upper4→temporal→context→combined→final refit，calibration選出85.4630%（7,384／8,640；net +79，confirmation +25），試驗全量最高85.5440%。摸頸22→29／72，A042–A048合計−2；不自動部署。七項新tests、十四項既有LoRA tests、GPU smoke／merged reload、117項產物檢查與NumPy獨立93群組驗證通過；見 `docs/hand-roi-improvement-series-v1-results.md`。
+
+- [x] 完成mixed4（6／7／10／11）：保留尾端adapters更新，同rank16、2,280筆／570steps，完整retained86為84.3981%（7,292／8,640），對upper2 net +15、upper4 −13、middle4 +1；未超過upper4，不採用或延長此recipe。CPU checks、14項LoRA tests、GPU smoke、merged reload與325項獨立產物稽核通過；見 `docs/hand-roi-mixed4-v1-results.md`。
+
+- [x] 完成 middle4 local expert（blocks6–9，凍結baseline10–11）：同rank16、2,280筆／570steps，完整retained86為84.3866%，對upper2 net +14、對upper4 net −14；不推薦或延長此設定。CPU checks、14項LoRA tests、GPU smoke、merged reload與完整獨立稽核通過；見 `docs/hand-roi-middle4-v1-results.md`。
+
+- [x] 整理原始 XCLIP→84.2245% 的權重來源、35 個歷史調參 trials、選中 checkpoint 的更新量與下一輪設計；見 `docs/xclip-rgb-vision-lora-path.md`。
+- [x] 實作最後四層 vision q/v LoRA 的 local expert，完成嚴格初始化、CPU checks、GPU smoke 與 2,280 筆／570-step pilot；完整 retained86 84.2245%→84.5486%，修正48／退步20、net +28，診斷之外 net +15。屬有限收益，不延長本輪訓練或自動替換部署模型；見 `docs/hand-roi-upper4-v1-results.md`。
+
 - [x] 完成 11 筆 GPU smoke、176 筆 skeleton 定位診斷，以及同批 176 筆 RGB-only MediaPipe 定位與分類比較；不訓練、不讀 test。
 - [x] 固定 whole＋zoom＋RGB interaction 為 121／176（原 104／176），修正 21、退步 4；目標三類 19→23／48。收益主要來自咳嗽、吃東西，搧風與摸頸未有合併增益；不當成 86 類 full validation 準確率、不替換 baseline。詳見 `docs/hand-roi-v1-audit.md` 與 `docs/rgb-hand-roi-v1-results.md`。
 - [x] 擴大到 1,228 筆（新增 1,052 筆）並完成 2,280 train 單 pass 局部 expert：相比未訓練局部合併，全選樣淨增 26、保留類別淨增 21；吃東西 35→45／72、咳嗽 37→49／72，摸頸仍 24→20／72，不替換 baseline。詳見 `docs/hand-roi-followup-v1.md`。
