@@ -1,5 +1,19 @@
 # TODO
 
+## 手部與互動區域推理診斷（2026-10-01）
+
+- [x] 完成 11 筆 GPU smoke、176 筆 skeleton 定位診斷，以及同批 176 筆 RGB-only MediaPipe 定位與分類比較；不訓練、不讀 test。
+- [x] 固定 whole＋zoom＋RGB interaction 為 121／176（原 104／176），修正 21、退步 4；目標三類 19→23／48。收益主要來自咳嗽、吃東西，搧風與摸頸未有合併增益；不當成 86 類 full validation 準確率、不替換 baseline。詳見 `docs/hand-roi-v1-audit.md` 與 `docs/rgb-hand-roi-v1-results.md`。
+- [x] 擴大到 1,228 筆（新增 1,052 筆）並完成 2,280 train 單 pass 局部 expert：相比未訓練局部合併，全選樣淨增 26、保留類別淨增 21；吃東西 35→45／72、咳嗽 37→49／72，摸頸仍 24→20／72，不替換 baseline。詳見 `docs/hand-roi-followup-v1.md`。
+- [x] 完整保留 86 類 validation（8,640 支）：whole＋zoom 79.9769% → 加入 trained RGB interaction 84.2245%，修正 505、退步 138、淨增 367；先前診斷之外 7,548 支淨增 283。詳見 `docs/hand-roi-full86-v1-results.md`。
+- [ ] 摸頸需另處理（仍 24→20／72），剪指甲另建固定 RGB 診斷；候選整合需評估 RGB 定位與第三次 forward 的推理成本。
+
+## Native attention supervision（2026-10-01）
+
+- [x] 完成原生attention研究與實作：最後兩層heads0–3的CLS→patch soft supervision，保留message token、RGB-only merged inference與獨立audit／smoke／pilot runner；詳見`docs/native-attention-supervision-v1-plan.md`。
+- [x] 10項相關tests、472筆attention audit與8-step GPU smoke通過；native attention到Q gradients與merged RGB-only strict reload通過。Smoke沒有分類增益，attention mechanism direction也未通過，不當成winner。
+- [x] 全量80,640 train、2 epochs pilot完成：raw120為58.9429%（baseline58.9198%，net+3），`inconclusive`；保留96類68.1270%→67.7900%（net−33），不推薦替換、不延長recipe。Attention audit mechanism direction通過但分類收益不足；未讀test。完整結果見`docs/native-attention-supervision-v1-plan.md`，artifacts位於`artifacts/native_attention_v1/pilot_seed42/`。
+
 ## Crop-aware 短 pilot（2026-09-30）
 
 - [x] Whole＋zoom完整validation已完成：58.92%→66.94%，無重訓；檢查代表性退步樣本，發現中央zoom可能裁掉倒地body。
@@ -175,3 +189,5 @@
 - [x] Multiclass 與 prototype 預設使用全部找到的影片，避免先前固定的每類
       sample budget 成為主要資料瓶頸；快速實驗仍可選用
       `--max-videos-per-class`。
+
+- [x] 產品範圍新增排除 A030／A089／A090／A067／A010／A032／A079／A023／A107／A106，現保留 86 類、排除 34 類；既有 validation 結果已重算，後續不優先處理這十類。見 `docs/product-evaluation-scope.md`。
