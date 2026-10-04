@@ -20,6 +20,9 @@
 │       ├── xclip_features.py
 │       ├── xclip_pre_mit_features.py
 │       ├── skeleton_data.py
+│       ├── patch16_skeleton_contracts.py
+│       ├── patch16_skeleton_targets.py
+│       ├── patch16_native_targets.py
 │       ├── data/
 │       │   ├── discovery.py
 │       │   ├── skeleton.py
@@ -34,6 +37,8 @@
 │       │   ├── gru.py
 │       │   ├── prototype.py
 │       │   ├── temporal.py
+│       │   ├── patch16_temporal.py
+│       │   ├── patch16_native.py
 │       │   ├── xclip.py
 │       │   ├── lora.py
 │       │   ├── skeletonclip.py
@@ -43,6 +48,14 @@
 │       │   ├── binary.py
 │       │   ├── engine.py
 │       │   ├── multiclass.py
+│       │   ├── patch16_skeleton.py
+│       │   ├── patch16_skeleton_dispatch.py
+│       │   ├── patch16_native_runtime.py
+│       │   ├── patch16_control.py
+│       │   ├── patch16_control_compare.py
+│       │   ├── patch16_anchor_cache.py
+│       │   ├── patch16_acceleration.py
+│       │   ├── patch16_monitor.py
 │       │   ├── prototype.py
 │       │   ├── xclip.py
 │       │   ├── xclip_lora.py
@@ -72,6 +85,8 @@
 │       └── XCVisionTest.py
 └── main.py                                # compatibility entry point
 ```
+
+The patch16 skeleton runner implements `--method semantic|temporal|spatial|native --mode audit|smoke|pilot`, with fixed patch16 student and separate patch32 teacher text/cache provenance. Outputs default to `artifacts/patch16_skeleton_v1/<method>/<mode>/seed42`; locks prohibit overwriting runs. The sequential workflow `python -m vlm.training.patch16_skeleton_dispatch --artifacts-root <fresh-root>` runs each method's gates before its pilot and is launched through the existing `vlm.training.spatial_dispatch` tmux backend. Completed-epoch continuation uses `--resume <last_checkpoint.pt>` in a fresh namespace. `patch16_anchor_cache` builds a shared FP32 training cache in checksummed, resumable shards; `patch16_acceleration` runs bounded temporal/spatial precision screens, and `patch16_monitor` records local summaries every 20 minutes. See [the experiment plan](docs/patch16-skeleton-plan.md) for recipes, stopping rules and the active run location.
 
 The complete pre-restructure contents of the old Python files move into
 `archive/legacy_scripts/` after local work and the latest `origin/main` have
@@ -236,3 +251,7 @@ Legacy defaults remain supported:
 | XCLIP LoRA tuning summary and trials | `artifacts/xclip_lora_tuning/` |
 | SkeletonCLIP Gate 0 audit | `artifacts/skeleton_data/` |
 | SkeletonCLIP Gate 1 compatibility report | `artifacts/skeletonclip_gate1/` |
+
+Method 4 core preparation uses `models/patch16_native.py` for opt-in native attention and `patch16_native_targets.py` for 196-patch Gaussian targets, KL, diagnostics and the two-epoch review contract. Native is connected to the unified CLI and runs audit, a native-specific three-arm precision screen, smoke and a bounded two-epoch pilot. Preparation artifacts and pending GPU gates are recorded in `artifacts/patch16_skeleton_v1/native_preparation_01/`; current semantic/temporal/spatial model and cache builder dependencies remain unchanged.
+
+The independent `patch16_control` workflow runs `--method ce_retention` through current-source audit/smoke and a fixed two-epoch pilot, then uses `patch16_control_compare` for same-epoch Native/Control metrics and aligned per-sample/per-action comparisons. It keeps eager native attention output while disabling auxiliary supervision, records training-boundary RNG and actual epoch order, and verifies reconstructed Native generator states without claiming historical bitwise replay. It does not enter the four-method dispatcher queue.

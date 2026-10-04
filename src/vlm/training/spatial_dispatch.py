@@ -34,14 +34,27 @@ def watch(root: Path, pid: int) -> None:
 
         emit({"event": "logger_attached", "training_pid": pid})
         while True:
-            for path in sorted(root.glob("*/progress.json")):
+            for path in sorted(root.rglob("progress.json")):
                 try:
                     progress = json.loads(path.read_text())
                 except (FileNotFoundError, json.JSONDecodeError):
                     continue
                 if previous.get(str(path)) != progress:
-                    emit({"event": "progress", "arm": path.parent.name, **progress})
+                    emit({"event": "progress", "arm": str(path.parent.relative_to(root)), **progress})
                     previous[str(path)] = progress
+            for path in sorted(root.rglob("selection.json")):
+                try:
+                    selection = json.loads(path.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    continue
+                summary = {group: {view: ({key: metrics.get(key) for key in
+                                          ("epoch", "raw_accuracy", "raw_macro_f1", "correct", "attention_correct")}
+                                         if metrics else None)
+                                   for view, metrics in values.items()}
+                           for group, values in selection.items()}
+                if previous.get(str(path)) != summary:
+                    emit({"event": "checkpoint_selection", "arm": str(path.parent.relative_to(root)), **summary})
+                    previous[str(path)] = summary
             report_path = root / "run_report.json"
             if report_path.exists():
                 try:
