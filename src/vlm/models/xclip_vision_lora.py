@@ -35,18 +35,33 @@ class XCLIPVisionClassifier(nn.Module):
             nn.Linear(int(xclip.projection_dim), num_classes),
         )
 
-    def forward(self, pixel_values: torch.Tensor, *, return_features: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, pixel_values: torch.Tensor, *, return_features: bool = False,
+                return_native_attentions: bool = False) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if return_features and return_native_attentions:
+            raise ValueError("Request features or native attentions, not both")
         if pixel_values.ndim != 5:
             raise ValueError("Expected RGB pixel_values [batch, frames, channels, height, width]")
         batch, frames = pixel_values.shape[:2]
         vision = self.vision_model(
-            pixel_values=pixel_values.flatten(0, 1), return_dict=True
+            pixel_values=pixel_values.flatten(0, 1), return_dict=True,
+            output_attentions=return_native_attentions,
         )
         projected = self.visual_projection(vision.pooler_output)
         if self.training and self.feature_noise_std:
             projected = projected + torch.randn_like(projected) * self.feature_noise_std
         video = self.mit(projected.reshape(batch, frames, -1), return_dict=True)
         logits = self.classifier(video.pooler_output)
+        if return_native_attentions:
+            patch_size = int(self.vision_model.config.patch_size)
+            patches = (pixel_values.shape[-2] // patch_size) * (pixel_values.shape[-1] // patch_size)
+            if vision.attentions is None or len(vision.attentions) < 2:
+                raise RuntimeError("Native attention supervision requires eager attention and at least two layers")
+            rows = []
+            for attention in vision.attentions[-2:]:
+                if attention is None or attention.shape[-2:] != (patches + 2, patches + 2) or attention.shape[1] < 4:
+                    raise RuntimeError("Expected CLS, image patches, message token and at least four attention heads")
+                rows.append(attention[:, :4, 0, :].float().mean(1))
+            return logits, torch.stack(rows, dim=1).reshape(batch, frames, 2, patches + 2)
         return (logits, video.pooler_output) if return_features else logits
 
 
@@ -62,12 +77,14 @@ class XCLIPVisionLoRAClassifier(XCLIPVisionClassifier):
         lora_alpha: float,
         lora_dropout: float,
         feature_noise_std: float = 0.0,
+        vision_block_indices: tuple[int, ...] | None = None,
     ) -> None:
         super().__init__(xclip, num_classes=num_classes, head_dropout=head_dropout, feature_noise_std=feature_noise_std)
         self.target_modules = (
             inject_vision_attention_lora(
                 self.vision_model,
                 upper_blocks=upper_blocks,
+                block_indices=vision_block_indices,
                 rank=lora_rank,
                 alpha=lora_alpha,
                 dropout=lora_dropout,

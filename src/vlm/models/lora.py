@@ -149,14 +149,19 @@ def inject_vision_attention_lora(
     rank: int,
     alpha: float,
     dropout: float,
+    block_indices: tuple[int, ...] | None = None,
 ) -> list[str]:
-    """Inject q/v LoRA into the final vision Transformer blocks only."""
+    """Inject q/v LoRA into final blocks or an explicit ordered block selection."""
     encoder = getattr(vision_model, "encoder", None)
     layers = getattr(encoder, "layers", None)
     if layers is None or not 0 <= upper_blocks <= len(layers):
         raise ValueError("upper_blocks must select existing vision encoder layers")
+    selected = list(range(len(layers) - upper_blocks, len(layers))) if block_indices is None else list(block_indices)
+    if (len(selected) != upper_blocks or selected != sorted(set(selected))
+            or any(type(index) is not int or not 0 <= index < len(layers) for index in selected)):
+        raise ValueError("block_indices must select upper_blocks distinct ordered existing layers")
     targets: list[str] = []
-    for index in range(len(layers) - upper_blocks, len(layers)):
+    for index in selected:
         attention = getattr(layers[index], "self_attn", None)
         if attention is None:
             raise ValueError(f"Vision layer {index} has no self_attn module")
@@ -207,9 +212,37 @@ def load_lora_state_dict(
             f"missing={missing}, unexpected={unexpected}"
         )
     parameters = dict(module.named_parameters())
+    for name, value in state_dict.items():
+        if value.shape != parameters[name].shape or not torch.isfinite(value).all():
+            raise ValueError(f"Invalid LoRA tensor: {name}")
     with torch.no_grad():
         for name, value in state_dict.items():
             parameters[name].copy_(value)
+
+
+def load_expanded_lora_state_dict(
+    module: nn.Module,
+    state_dict: dict[str, torch.Tensor],
+    *,
+    source_targets: list[str],
+    added_targets: list[str],
+) -> None:
+    """Warm start a larger target set, allowing only declared zero-B additions."""
+    actual = {name for name, child in module.named_modules() if isinstance(child, LoRALinear)}
+    source, added = set(source_targets), set(added_targets)
+    if (len(source) != len(source_targets) or len(added) != len(added_targets)
+            or not added or source & added or source | added != actual):
+        raise ValueError("Invalid expanded LoRA target mapping")
+    expected_source = {f"{target}.{suffix}" for target in source for suffix in ("lora_a", "lora_b")}
+    if set(state_dict) != expected_source:
+        raise ValueError("Source LoRA keys differ from declared source targets")
+    modules = dict(module.named_modules())
+    if any(modules[target].merged or torch.count_nonzero(modules[target].lora_b).item()
+           for target in actual):
+        raise ValueError("Expansion requires fresh, unmerged zero-B adapters")
+    expanded = lora_state_dict(module)
+    expanded.update(state_dict)
+    load_lora_state_dict(module, expanded)
 
 
 def merged_base_state_dict(module: nn.Module) -> dict[str, torch.Tensor]:

@@ -40,3 +40,6 @@ These rules record explicit behavior corrections made by the user while working 
 ## Running conventions
 - Smoke tests are allowed, but ensure they cover only the most important behaviors and do not take too long to run.
 - Control group aren't mandatory as faster iteration on model with shorter train time and higher accuracy is preferred.
+
+## Local machine notes
+Check if the `AGENTS.local.md` file exists for machine-specific instructions. It is intentionally excluded from Git and can be refreshed when the machine changes.
