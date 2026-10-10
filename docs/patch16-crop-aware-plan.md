@@ -1,6 +1,6 @@
 # Patch16 crop-aware 訓練計畫
 
-日期：2026-10-09。狀態：計畫與實作完成、CPU 檢查通過；GPU smoke 與完整訓練尚未啟動。本文完成 `docs/patch16-resolution-plan.md` Stage 3 唯一剩下的項目。只讀 canonical train／validation，不讀 test。
+日期：2026-10-09。狀態：完整訓練已完成（2026-10-10），依事先登記的規則判為 promising；結果見第 10 節。只有 seed 42。本文完成 `docs/patch16-resolution-plan.md` Stage 3 唯一剩下的項目。只讀 canonical train／validation，不讀 test。
 
 ## 1. 目標與範圍
 
@@ -96,4 +96,45 @@ find cache/patch16_crop_aware_zoom70_uint8 -name "*.npy" | wc -l
 
 ## 10. 結果
 
-尚未執行。
+所有數字皆為 seed 42、完整 12,960 筆 canonical validation，未讀 test。Artifacts 位於 `artifacts/patch16_crop_aware/seed42/`。
+
+### Smoke
+
+50 個 training batches、10 個 validation batches 正常結束；初始 logits hash 與 pilot 完全相同（`786a79b8…`），確認 fresh LoRA 初始化一致；trainable 參數 193,656；merge 與 merged RGB-only strict reload 最大誤差 `1.25e-6`。
+
+### 完整訓練
+
+20 個 epoch 共 14.9 小時。Epoch 1 含 zoom cache 填寫約 1.1 小時，之後每個 epoch 約 42 分鐘。Zoom cache 最終 93,600 個檔案（106 GiB）。Epoch 5 whole `70.62%`，高於提早停止門檻 `69.68%`。最後 checkpoint 的 merge 與 merged RGB-only strict reload 最大誤差皆為 `5.78e-6`；peak memory 3.15 GB，與 pilot 相同。
+
+| Epoch | 1 | 2 | 3 | 5 | 9 | 13 | 14 | 17 | 20 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Pilot whole | 60.37% | 64.63% | 67.01% | 70.68% | 72.75% | 73.63% | 73.97% | 73.51% | 74.12% |
+| Crop-aware whole | 60.22% | 64.94% | 66.26% | 70.62% | 73.12% | 73.79% | 74.00% | 74.78% | 75.33% |
+| Crop-aware zoom70 | 69.92% | 73.06% | 75.15% | 79.13% | 81.04% | 81.53% | 81.90% | 81.86% | 82.41% |
+| Crop-aware whole＋zoom | 69.57% | 73.30% | 74.95% | 79.06% | 81.09% | 81.81% | 82.05% | 82.29% | 82.89% |
+
+Epoch 20 同時是三個 view 的最佳 epoch，因此固定 epoch 的判讀與挑選最佳 epoch 結果相同。
+
+### Epoch 20 與 pilot 比較
+
+| View | Pilot | Crop-aware | 差距（points） | Fixes／regressions | A042–A048 correct／504 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Whole（單次推論） | 74.12% | 75.33% | +1.21 | 857／700 | 358 → 380 |
+| Center zoom70（單次推論） | 78.97% | 82.41% | +3.43 | 941／496 | 383 → 403 |
+| Whole＋zoom 機率平均（兩次推論） | 80.96% | 82.89% | +1.93 | 786／536 | 385 → 404 |
+
+Macro-F1 分別由 `75.45%`／`79.93%`／`81.84%` 提升到 `76.66%`／`83.06%`／`83.60%`，NLL 皆下降。配對 McNemar 檢定 z 值：whole 約 4.0、whole＋zoom 約 6.9。
+
+| Event（whole＋zoom correct／72） | A042 | A043 | A044 | A045 | A046 | A047 | A048 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Pilot | 59 | 71 | 64 | 42 | 59 | 28 | 62 |
+| Crop-aware | 60 | 69 | 70 | 50 | 62 | 33 | 60 |
+
+### 判讀
+
+依事先登記的規則判為 **promising**：whole＋zoom `82.89%` 高於門檻 `81.16%`，A042–A048 correct 404 也高於 385。
+
+- 單次 zoom70 推論（`82.41%`）已超過 pilot 需要兩次 forward 的 whole＋zoom（`80.96%`）。
+- 單次 whole 推論提升到 `75.33%`（+1.21 points），但仍低於 pilot 的 zoom70（`78.97%`）。因此 zoom 的收益沒有完整學進 whole view：訓練主要是讓模型更會利用放大後的畫面，而不是讓它在 whole 輸入上看得更清楚。
+- 事件層級並非全部改善：A043（跌倒）whole＋zoom 由 71 降到 69，A048（嘔吐）由 62 降到 60，zoom70 單次推論的 A048 由 63 降到 58。中央 zoom 可能裁掉倒地人物的風險仍在，不能只看 group 合計。
+- 只有 seed 42。和 pilot 是 matched comparison（相同初始化、shuffle 順序與配方），但仍未排除 seed 間的變異。
