@@ -1,6 +1,6 @@
 # Person-aware crop Stage 0: inference diagnostic plan
 
-Date: 2026-10-11. Status: plan only; not yet implemented or run.
+Date: 2026-10-11. Status: completed; decision go (section 7).
 
 ## 1. Goal and scope
 
@@ -50,3 +50,35 @@ The primary comparison is whole + person against whole + zoom (10,742 correct), 
 - **Go (write a Stage 1 training plan)**: whole + person correct is at least 10,742, and A042–A048 whole + person correct is at least 404.
 - **No-go**: whole + person correct is below 10,716.
 - **Inconclusive**: anything else. Review case changes and input strips before deciding.
+
+## 7. Results
+
+Completed 2026-10-11 on the full 12,960-sample validation split; no training, test unread. Localization took 17 minutes with 151 fallbacks (1.2%); saved-logit parity on the first 64 samples passed (max difference `1.2e-5`, identical argmax). Artifacts are in `artifacts/person_crop_stage0/`.
+
+| View | Correct | Accuracy | Macro-F1 | NLL | A042–A048 correct / 504 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Whole | 9,763 | 75.33% | 76.66% | 0.864 | 380 |
+| Center zoom70 | 10,680 | 82.41% | 83.06% | 0.598 | 403 |
+| Person crop | 11,077 | 85.47% | 86.06% | 0.505 | 413 |
+| Whole + zoom | 10,742 | 82.89% | 83.60% | 0.609 | 404 |
+| Whole + person | 10,995 | 84.84% | 85.53% | 0.559 | 413 |
+| Whole + zoom + person | 11,173 | 86.21% | 86.70% | 0.526 | 414 |
+
+| Event (correct / 72) | A042 | A043 | A044 | A045 | A046 | A047 | A048 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Center zoom70 | 57 | 69 | 71 | 53 | 63 | 32 | 58 |
+| Person crop | 52 | 70 | 71 | 52 | 63 | 48 | 57 |
+| Whole + zoom | 60 | 69 | 70 | 50 | 62 | 33 | 60 |
+| Whole + person | 56 | 71 | 70 | 54 | 63 | 41 | 58 |
+
+Person crop against center_zoom70: 992 fixes, 595 regressions. Whole + person against whole + zoom: 612 fixes, 359 regressions. Person crop accuracy on the 151 fallback samples (center_zoom70 box) is 70.2%.
+
+Geometry: the person box extends beyond the center_zoom70 box in 44.0% of located samples overall, 62.5% for A043, 45.7% for A048, and 79.2% for two-person classes. The median person square is 66.3% of the short edge (two-person classes 74.5%). Fallbacks concentrate in A061–A120, the NTU120 extension setups.
+
+### Decision
+
+**Go** under the pre-registered rules: whole + person has 10,995 correct (at least 10,742) and 413 A042–A048 correct (at least 404).
+
+- A single person-crop pass (85.47%) beats every earlier two-pass ensemble, even though the checkpoint never trained on person crops.
+- The largest event gain is A047 (neck pain, 32 → 48). A043 recovers slightly (69 → 70 single pass, 71 in whole + person).
+- A042 (staggering) drops in the single pass (57 → 52) and A048 stays flat, so the gain is not uniform across events.
