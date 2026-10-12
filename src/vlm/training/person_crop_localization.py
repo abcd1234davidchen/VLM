@@ -1,7 +1,7 @@
-"""RGB-only person crop localization for the person-aware crop Stage 0 diagnostic.
+"""RGB-only person crop localization for the person-aware crop experiments.
 
 Runs MediaPipe PoseLandmarker on the classifier's uniform 8 frames of every canonical
-validation video and derives one clip-static square crop per sample. Labels and skeletons
+train or validation video and derives one clip-static square crop per sample. Labels and skeletons
 are never read. Contract: docs/person-aware-crop-stage0-plan.md section 4.
 """
 
@@ -101,13 +101,13 @@ def localize(task: tuple[str, str]) -> dict[str, object]:
 def run(args: argparse.Namespace) -> dict[str, object]:
     import mediapipe as mp
     split = json.loads(args.split.read_text(encoding="utf-8"))
-    rows = split["val"][:args.max_samples]
+    rows = split[args.subset][:args.max_samples]
     tasks = [(Path(row["video_path"]).stem.removesuffix("_rgb"), str(row["video_path"])) for row in rows]
     if len({identifier for identifier, _ in tasks}) != len(tasks):
-        raise ValueError("Duplicate validation sample IDs")
+        raise ValueError(f"Duplicate {args.subset} sample IDs")
     root = args.artifacts_dir
     lock = {
-        "experiment": "person_crop_stage0_localization", "split": "val", "samples": len(tasks),
+        "experiment": "person_crop_stage0_localization", "split": args.subset, "samples": len(tasks),
         "sample_ids_sha256": hashlib.sha256("\n".join(i for i, _ in tasks).encode()).hexdigest(),
         "source_sha256": {"split": sha256_file(args.split), "pose_model": sha256_file(args.pose_model),
                           "runner": sha256_file(Path(__file__)),
@@ -162,6 +162,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", type=Path, default=Path("artifacts/xclip/selected_split.json"))
     parser.add_argument("--pose-model", type=Path, default=Path("artifacts/hand_roi_models/pose_landmarker_lite.task"))
+    parser.add_argument("--subset", choices=("train", "val"), default="val")
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--max-samples", type=int)
