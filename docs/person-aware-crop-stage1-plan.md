@@ -1,6 +1,6 @@
 # Person-aware crop Stage 1: training plan
 
-Date: 2026-10-12. Status: plan only; not yet implemented or run.
+Date: 2026-10-12. Status: completed; decision no-go (section 7).
 
 ## 1. Goal and scope
 
@@ -44,3 +44,27 @@ All judgments use epoch 20 with no epoch selection. The baseline is the crop-awa
 - **No-go**: person_crop single-pass correct is below 11,077.
 - **Inconclusive**: anything else.
 - **Also reported (not gates)**: A042 and A047 per event, whole + person, whole single pass, and the epoch curve against crop-aware center_zoom70.
+
+## 7. Results
+
+Completed 2026-10-13: 20 epochs, no early stop (epoch 5 person_crop 81.65%), test unread. Initial logits matched the pilot, merge and RGB-only reload parity passed (max difference `5.4e-6`), and 193,656 trainable parameters. Artifacts are in `artifacts/patch16_person_crop/seed42/`.
+
+| Epoch 20 view | Crop-aware (Stage 0) correct | Person-trained correct | Person-trained accuracy | Macro-F1 | NLL | A042–A048 correct / 504 | Fixes / regressions |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Whole | 9,763 | 9,653 | 74.48% | 75.90% | 0.898 | 395 (was 380) | 645 / 755 |
+| Person crop | 11,077 | 11,069 | 85.41% | 86.29% | 0.506 | 430 (was 413) | 482 / 490 |
+| Whole + person | 10,995 | 10,984 | 84.75% | 85.63% | 0.572 | 428 (was 413) | 488 / 499 |
+
+| Person crop event (correct / 72) | A042 | A043 | A044 | A045 | A046 | A047 | A048 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Crop-aware (Stage 0) | 52 | 70 | 71 | 52 | 63 | 48 | 57 |
+| Person-trained | 60 | 71 | 68 | 58 | 64 | 50 | 59 |
+
+Person crop accuracy by epoch: 81.65% at 5, 84.25% at 10, 84.89% at 15, 85.52% at 19, 85.41% at 20. It rose 3.8 points from epoch 5 to 20, against 3.3 points for crop-aware center_zoom70.
+
+### Decision
+
+**No-go** under the pre-registered rules: person_crop single-pass correct is 11,069, 8 below the 11,077 baseline.
+
+- Overall accuracy is a tie (482 fixes, 490 regressions, −0.06 points). Training on person crops adds nothing overall beyond using person crops at inference with the crop-aware checkpoint.
+- A042–A048 person_crop correct rose from 413 to 430, and A042 recovered from 52 to 60, as the hypothesis predicted. This is an event-level gain, not a pre-registered gate, and comes with a slightly lower whole view (−110 correct).
