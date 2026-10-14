@@ -162,7 +162,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", type=Path, default=Path("artifacts/xclip/selected_split.json"))
     parser.add_argument("--pose-model", type=Path, default=Path("artifacts/hand_roi_models/pose_landmarker_lite.task"))
-    parser.add_argument("--subset", choices=("train", "val"), default="val")
+    parser.add_argument("--subset", choices=("train", "val", "test"), default="val")
     parser.add_argument("--artifacts-dir", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--max-samples", type=int)
