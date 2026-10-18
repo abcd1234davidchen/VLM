@@ -79,6 +79,18 @@ The equivalent `uv run python -m vlm ...` form is also supported. Run any
 command with `--help` to see its dataset, cache, artifact, model, sampling, and
 training options.
 
+## Live Alert Demo
+
+The live demo runs the locked stage-1 configuration (A on center_zoom70 plus B on the person crop) as the detector on a sliding window from the webcam or a local video file, raises an alert when the falling (A043) or nausea/vomiting (A048) probability reaches its own calibrated threshold in one step (`--persist`), and asks the verifier, a local VLM, to check the alert window together with 8 frames from the window before it, so it sees what led up to the alert. Staggering and the body-pain poses (A042, A044–A047) are not alerted because their acted NTU versions are not reliable enough:
+
+```bash
+uv run --with mediapipe python -m vlm.demo.server
+```
+
+Open `http://127.0.0.1:8642`. It needs `artifacts/patch16_crop_aware/seed42/final_merged.pt`, `artifacts/patch16_person_crop/seed42/final_merged.pt`, and `artifacts/hand_roi_models/pose_landmarker_lite.task`. The verifier runs `mlx-vlm` in its own isolated environment and needs Apple Silicon; pass `--verifier-model none` to run the detector alone. The page fits one screen: the camera and the falling and vomiting scores stay in view, and `j`/`k` or the arrow keys switch the side pane between the latest verifier check, the frames fed to each model, the detector outputs, the alert history, the step log, and the settings. When the verifier sees a normal activity such as exercise, the alert is held rather than deleted: the verifier rechecks the newest 8-frame window every 15 seconds (`--recheck`), any recheck that is not a normal activity notifies, and three normal rechecks in a row (`--rechecks`) clear the alert, which stays in the log. If there is no new video to recheck, for example because a video file ended, the alert ends without notifying and stays in the log. This hold rule is a user decision recorded in `docs/vlm-verifier-bakeoff-plan.md` and is not yet validated. Alert frames and verifier answers are saved under `cache/demo_alerts/`.
+
+Phone notifications are optional. Install the ntfy app on each phone and subscribe to one hard-to-guess topic, install `cloudflared` (`brew install cloudflared`), and put the topic in `demo_local.json` (copy `src/vlm/demo/demo_local.example.json`; the file is ignored by git, and `--ntfy-topic` overrides it). When the server starts, a first push asks each phone to register a name. Every notified alert is then pushed through ntfy.sh with only the title "Possible falling detected!!!" and a link to an alert page that loops the frames the verifier saw. Opening the page marks the alert as seen by that phone's registered name, and the page has a demo-only Call 911 button that places no call but records who pressed it; both responses show on the demo page. The page also shows the person's name, address and notes from `demo_local.json`. Nothing is uploaded: a separate local server answers only paths under random tokens, alert links for 24 hours (`--share-hours`), with `Cache-Control: private` so Cloudflare keeps no copy, and a Cloudflare Quick Tunnel (no account or domain) makes it reachable. The tunnel address changes on every start, so links in old notifications stop working and phones register again after a restart. `--no-tunnel` sends text only, and Settings has a test button.
+
 ## Training Pipelines
 
 The classifier training commands follow this high-level flow:

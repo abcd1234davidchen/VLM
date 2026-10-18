@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Register This Phone</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #1c1c1c; --raised: #333333; --line: #444444; --text: #ececec; --muted: #a3a3a3; --calm: #4db89f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 18px/1.45 "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 20px 16px 40px; }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+  .muted { color: var(--muted); }
+  h1 { font-size: 26px; line-height: 1.2; margin: 0 0 8px; }
+  .names { display: grid; gap: 10px; margin: 20px 0; }
+  .names button, .other button { background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 14px; font-weight: 600; cursor: pointer; }
+  .names button.on { border-color: var(--calm); color: var(--calm); }
+  .other { display: flex; gap: 10px; }
+  .other input { flex: 1; min-width: 0; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .done { margin-top: 20px; color: var(--calm); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Who is this phone?</h1>
+  <p class="muted">Alerts you open on this phone will be marked as seen by this name. You register again each time the demo restarts.</p>
+  <div class="names" id="names"></div>
+  <form class="other" id="other"><input id="other-name" maxlength="40" placeholder="Another name" autocomplete="name"><button>Save</button></form>
+  <p class="done" id="done" hidden></p>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const base = location.pathname.replace(/\/$/, "");
+const device = (() => {  // shared with the alert pages on this tunnel address
+  let id = "";
+  try { id = localStorage.getItem("elder-alert-device") || ""; } catch {}
+  if (!id) {
+    id = crypto.getRandomValues(new Uint32Array(4)).join("-");
+    try { localStorage.setItem("elder-alert-device", id); } catch {}
+  }
+  return id;
+})();
+
+function show(state) {
+  $("names").replaceChildren(...state.names.map((name) => {
+    const button = document.createElement("button");
+    button.textContent = name;
+    button.className = name === state.registered ? "on" : "";
+    button.onclick = () => register(name);
+    return button;
+  }));
+  $("done").hidden = !state.registered;
+  $("done").textContent = state.registered ? `Registered as ${state.registered}. You can close this page.` : "";
+}
+
+async function load() {
+  const response = await fetch(`${base}/state?device=${device}`, {cache: "no-store"});
+  if (response.ok) show(await response.json());
+  else document.querySelector("main").replaceChildren(Object.assign(document.createElement("h1"), {textContent: "This link has expired"}));
+}
+
+async function register(name) {
+  await fetch(`${base}/register`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({device, name})});
+  await load();
+}
+
+$("other").onsubmit = (event) => {
+  event.preventDefault();
+  const name = $("other-name").value.trim();
+  if (name) register(name);
+};
+load();
+</script>
+</body>
+</html>

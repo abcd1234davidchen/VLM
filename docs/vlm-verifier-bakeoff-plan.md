@@ -87,3 +87,14 @@ Keeping a dismissal as `uncertain` when the same answer reports the person on th
 | Qwen3.5-4B, floor guard | 13 | 1 | 83 |
 
 This removes the fall dismissals but still dismisses 8 to 13 pain-pose alerts, so it would also fail the recall guard. Any revised rule (floor guard, a prompt without the "people often bend or touch their face" priming sentence, or allowing dismissal only for specific stage-1 events) needs its own pre-registered run on clips not used here, such as the flagged calibration-half clips.
+
+### Live demo rule (user decision, 2026-10-18, not validated)
+
+The live demo now alerts only on falling and nausea/vomiting, and the user chose to let the VLM hold an alert instead of only describing it, because repeated false alerts for exercise such as push-ups would make relatives ignore notifications. A normal-activity answer never deletes an alert at once: the alert is held, the VLM rechecks the newest 2.5-second window every 15 seconds, any recheck that is not a normal activity notifies, and only three normal-activity rechecks in a row clear the alert, which stays in the log. A missing answer or an `uncertain` answer notifies. A wrong dismissal therefore delays a notification instead of losing it, and a person who falls and stays down is notified at the first recheck that sees them on the floor.
+
+When there is no new video to recheck, for example because a video file ended or the source was stopped, the alert ends as `ended` without notifying (user decision; a camera that stops during a hold is rare and this is a demo).
+
+The first check sends 16 frames: 8 from the window before the alert, then the 8 alert frames, so the verifier sees what led up to the event; rechecks send only the newest 8-frame window. The bake-off used 8 frames per clip, so this input is also unvalidated. On the development Mac, 16 frames take about 13 seconds versus about 7 for 8.
+
+This rule departs from the pre-registered decision above and has no evaluation yet. The bake-off answers suggest why holding is needed instead of the floor guard: every live push-up and exercise dismissal also answered `person_on_floor_at_end: true`, so a floor guard would notify on them. A pre-registered run on data not used here, such as the URFall falls and daily-activity clips, should measure falls delayed or missed and daily-activity notifications avoided before the rule is used outside the demo.
+

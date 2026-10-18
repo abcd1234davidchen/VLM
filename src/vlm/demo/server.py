@@ -15,6 +15,13 @@ answer also notifies, so a wrong normal-activity answer costs a delay, never a m
 new video to recheck (the video file ended or the source stopped), the alert ends as ``ended`` without
 notifying and stays in the log.
 
+With an ntfy topic (``ntfy_topic`` in ``demo_local.json``, or ``--ntfy-topic``), every notified alert is
+also pushed to the phones subscribed to that topic, with a link to an alert page served from this computer
+through a Cloudflare Quick Tunnel (see notify.py). The page loops the frames the verifier saw, marks the
+alert as seen by the phone that opens it (named through the registration push sent at startup), has a
+demo-only emergency button that places no call, and shows the person's details from ``demo_local.json``.
+That file holds personal settings and is ignored by git.
+
     uv run --with mediapipe python -m vlm.demo.server
 """
 
@@ -36,6 +43,7 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 import numpy as np
 
+from vlm.demo.notify import AlertShare, Notifier
 from vlm.demo.stage1 import ALERT_EVENTS, DEFAULT_THRESHOLDS
 from vlm.experiments.vlm_verifier import PROMPT
 
@@ -128,6 +136,13 @@ class Monitor:
         self.verifier = Verifier(args.verifier_model, self._verified, self.alerts_dir / "verifier.log") if args.verifier_model != "none" else None
         # Per open alert: monotonic deadline of the next recheck or answer, and the last stage-1 step it used.
         self.open: dict[str, dict] = {}
+        self.notifier, self.test_alert = None, None
+        self.registrations: dict[str, str] = {}  # phone device id -> registered name, for this tunnel's lifetime
+        topic = getattr(args, "ntfy_topic", None) or self._local().get("ntfy_topic")
+        if topic:
+            share = AlertShare(args.share_port, args.share_hours * 3600, self.alerts_dir / "tunnel.log", self,
+                               tunnel=not args.no_tunnel)
+            self.notifier = Notifier(topic, args.ntfy_server, share)
         threading.Thread(target=self._load_and_run, daemon=True).start()
         threading.Thread(target=self._watch_open_alerts, daemon=True).start()
 
@@ -297,6 +312,95 @@ class Monitor:
     def _decide_locked(self, alert: dict, status: str, reason: str) -> None:
         alert["status"], alert["reason"], alert["decided_wall"], alert["next_check_wall"] = status, reason, time.time(), None
         self.open.pop(alert["id"], None)
+        if status == "notified" and self.notifier:
+            self._push_locked(alert)
+
+    def _push_locked(self, alert: dict) -> None:
+        """Send the phone notification; its alert page loops the frames of the check that decided it."""
+        check = alert["checks"][-1] if alert["checks"] else alert
+        verifier = check["verifier"]
+        evidence = (verifier.get("answer") or {}).get("evidence", "") if verifier.get("status") == "done" else ""
+        title = f"Possible {alert['event_name']} detected"
+        message = f"{evidence or 'The camera may have seen ' + alert['event_name'] + '.'} Please check on them now."
+        paths = [self.alerts_dir / url.removeprefix("/alerts/") for url in check["frames"]]
+        alert |= {"phone": {"status": "sending"}, "phone_text": {"title": title, "message": message}, "responses": []}
+
+        def done(record: dict) -> None:
+            with self.lock:
+                alert["phone"] = record
+                self._save_alert(alert)
+        self.notifier.send(alert["id"], title + "!!!", lambda: [path.read_bytes() for path in paths], done)
+
+    def send_test_notification(self) -> None:
+        with self.lock:
+            if self.notifier is None:
+                raise ValueError("Phone notifications are off; set ntfy_topic in demo_local.json")
+            frames = [] if self.latest_frames is None else [
+                cv2.imencode(".jpg", cv2.cvtColor(f, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+                for f in self.latest_frames]
+            text = {"title": "Test alert",
+                    "message": "Phone notifications work." + (" The video shows the current camera view." if frames else "")}
+            self.test_alert = {"id": "test", "wall": time.time(), "event_name": "test", "phone": {"status": "sending"},
+                               "phone_text": text, "responses": []}
+            test = self.test_alert
+
+        def done(record: dict) -> None:
+            with self.lock:
+                test["phone"] = record
+        self.notifier.send("test", "Test from the elder safety demo", lambda: frames, done)
+
+    # ------------------------------------------------------------------ alert page (behind the tunnel)
+    def _local(self) -> dict:
+        """Personal settings; read on every alert page request, so edits show without a restart."""
+        try:
+            return json.loads(self.args.local.read_text(encoding="utf-8"))
+        except (AttributeError, OSError, ValueError):
+            return {}
+
+    def _shared_alert_locked(self, alert_id: str) -> dict | None:
+        if alert_id == "test":
+            return self.test_alert
+        return next((a for a in self.alerts if a["id"] == alert_id and "phone_text" in a), None)
+
+    def page_state(self, alert_id: str, device: str) -> dict | None:
+        person = self._local().get("person") or {}
+        with self.lock:
+            alert = self._shared_alert_locked(alert_id)
+            if alert is None:
+                return None
+            responses = [{"name": r["name"], "action": r["action"], "wall": r["wall"], "you": bool(device) and r["device"] == device}
+                         for r in alert["responses"]]
+            return {"test": alert_id == "test", "wall": alert["wall"], "event_name": alert["event_name"], **alert["phone_text"],
+                    "responses": responses, "person": person}
+
+    def record_response(self, alert_id: str, device: str, action: str) -> None:
+        with self.lock:
+            alert = self._shared_alert_locked(alert_id)
+            if alert is None:
+                return
+            # One "seen" per phone: reopening the page keeps the first time.
+            if action == "seen" and any(r["action"] == "seen" and r["device"] == device for r in alert["responses"]):
+                return
+            if len(alert["responses"]) >= 50:
+                return
+            name = self.registrations.get(device, "Someone")
+            alert["responses"].append({"device": device, "name": name, "action": action, "wall": time.time()})
+            if alert_id != "test":
+                self._save_alert(alert)
+
+    def registration_state(self, device: str) -> dict:
+        names = [str(r.get("name")) for r in self._local().get("relatives") or [] if r.get("name")]
+        with self.lock:
+            return {"names": names, "registered": self.registrations.get(device)}
+
+    def register(self, device: str, name: str) -> None:
+        """Name this phone; responses it already made on open alerts take the name too."""
+        with self.lock:
+            self.registrations[device] = name
+            for alert in [*self.alerts, *([self.test_alert] if self.test_alert else [])]:
+                for response in alert.get("responses", []):
+                    if response["device"] == device:
+                        response["name"] = name
 
     def _schedule_recheck_locked(self, alert: dict, step: int) -> None:
         self.open[alert["id"]] = {"deadline": time.monotonic() + self.config["recheck_s"], "waiting": False, "step": step}
@@ -367,6 +471,8 @@ class Monitor:
             fps = sum(now - t < 2.0 for t in self.received) / 2.0
             return {"stage1": self.stage1_status, "config": self.config, "session": self.session,
                     "defaults": {"system": self.args.system_defaults, "user": self.args.user_defaults},
+                    "phone": None if self.notifier is None else self.notifier.state() | {
+                        "test": self.test_alert, "registered": sorted(set(self.registrations.values()))},
                     "input_fps": fps, "buffer_frames": len(self.frames), "latest": self.latest,
                     "history": list(self.history), "steps": list(self.steps), "alerts": self.alerts[-30:],
                     "verifier": None if self.verifier is None else
@@ -448,6 +554,8 @@ def handler(monitor: Monitor):
                     monitor.save_user_defaults()
                 elif url.path == "/api/config/reset":
                     monitor.reset_to_system_defaults()
+                elif url.path == "/api/notify/test":
+                    monitor.send_test_notification()
                 else:
                     return self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             except (KeyError, ValueError) as error:
@@ -476,6 +584,13 @@ def main() -> None:
     parser.add_argument("--rechecks", type=int, default=3, help="consecutive normal-activity rechecks that clear an alert on hold")
     parser.add_argument("--min-interval", type=float, default=0.5, help="minimum seconds between inference steps")
     parser.add_argument("--alerts-dir", type=Path, default=Path("cache/demo_alerts"))
+    parser.add_argument("--ntfy-topic", default=None, help="ntfy topic for phone notifications; default ntfy_topic in --local, off when neither")
+    parser.add_argument("--ntfy-server", default="https://ntfy.sh")
+    parser.add_argument("--share-port", type=int, default=8643, help="local port of the alert page server behind the tunnel")
+    parser.add_argument("--share-hours", type=float, default=24.0, help="hours an alert page link keeps working")
+    parser.add_argument("--no-tunnel", action="store_true", help="send text-only notifications, without an alert page")
+    parser.add_argument("--local", type=Path, default=Path("demo_local.json"),
+                        help="personal settings ignored by git: ntfy_topic, and the person and relatives for the alert page")
     parser.add_argument("--settings", type=Path, default=Path("demo_settings.json"),
                         help="user defaults saved from the Settings pane; explicit command-line options override them")
     # System defaults are the values written above; saved user defaults replace them, and explicit options win.
@@ -497,6 +612,8 @@ def main() -> None:
     finally:
         if monitor.verifier:
             monitor.verifier.close()
+        if monitor.notifier and monitor.notifier.share:
+            monitor.notifier.share.close()
 
 
 if __name__ == "__main__":

@@ -12,5 +12,8 @@
 __pycache__/
 RGB_vids
 
+# Live demo personal settings (ntfy topic, contacts)
+/demo_local.json
+
 # Live demo user default settings
 /demo_settings.json

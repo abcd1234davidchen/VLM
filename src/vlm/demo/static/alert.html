@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Elder Safety Alert</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #1c1c1c; --surface: #262626; --raised: #333333; --line: #444444; --text: #ececec; --muted: #a3a3a3;
+    --alarm: #e5484d; --calm: #4db89f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 18px/1.45 "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 20px 16px 40px; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+  .muted { color: var(--muted); }
+  .small { font-size: 15px; }
+  h1 { font-size: 26px; line-height: 1.2; margin: 0 0 4px; }
+  h2 { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 28px 0 10px; }
+  .test { background: var(--raised); border-radius: 8px; padding: 8px 12px; margin-bottom: 14px; font-size: 15px; }
+  .player { position: relative; margin: 16px 0 12px; border-radius: 10px; overflow: hidden; background: #000; }
+  .player img { display: block; width: 100%; }
+  .player .counter { position: absolute; right: 8px; bottom: 8px; padding: 1px 8px; border-radius: 5px; background: rgba(0, 0, 0, .65); font-size: 14px; }
+  .message { margin: 0; }
+  .emergency { display: block; width: 100%; margin-top: 20px; border: 0; border-radius: 10px; padding: 16px 10px; background: var(--alarm); color: #fff; font-weight: 700; font-size: 19px; cursor: pointer; }
+  .emergency:disabled { opacity: .5; cursor: default; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  .responses li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .responses li.emergency-row { color: #ff8e91; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <div id="expired" hidden><h1>This alert link has expired</h1><p class="muted">Alert links work for a limited time and stop when the demo restarts.</p></div>
+  <div id="alert" hidden>
+    <div class="test" id="test" hidden>This is a test notification. Nothing happened.</div>
+    <h1 id="title"></h1>
+    <div class="muted small" id="when"></div>
+    <div class="player" id="player" hidden><img id="frame" alt="The video the verifier checked"><span class="counter" id="counter"></span></div>
+    <p class="message" id="message"></p>
+
+    <button class="emergency" id="btn-emergency">Call 911</button>
+
+    <h2>Responses</h2>
+    <ul class="responses" id="responses"></ul>
+
+    <section id="person-section" hidden>
+      <h2 id="person-heading">Person</h2>
+      <dl id="person"></dl>
+    </section>
+  </div>
+</main>
+<script>
+const FRAME_MS = 350;  // same pace as the verifier pane on the demo page
+const $ = (id) => document.getElementById(id);
+const base = location.pathname.replace(/\/$/, "");
+const clock = (wall) => new Date(wall * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+const ago = (wall) => {
+  const minutes = Math.floor((Date.now() / 1000 - wall) / 60);
+  return minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : `${Math.floor(minutes / 60)} h ago`;
+};
+// The device id ties this phone to its registered name; it lasts as long as this tunnel address.
+const device = (() => {
+  let id = "";
+  try { id = localStorage.getItem("elder-alert-device") || ""; } catch {}
+  if (!id) {
+    id = crypto.getRandomValues(new Uint32Array(4)).join("-");
+    try { localStorage.setItem("elder-alert-device", id); } catch {}
+  }
+  return id;
+})();
+let state = null, frames = [], frameIndex = 0, seenSent = false;
+
+function element(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function render() {
+  $("alert").hidden = false;
+  $("test").hidden = !state.test;
+  $("title").textContent = state.title;
+  $("when").textContent = `${clock(state.wall)}, ${ago(state.wall)}`;
+  $("message").textContent = state.message;
+
+  const items = state.responses.map((r) => r.action === "emergency"
+    ? element("li", `${r.name} pressed Call 911 at ${clock(r.wall)}`, "emergency-row")
+    : element("li", `${r.name} saw this at ${clock(r.wall)}${r.you ? " (you)" : ""}`));
+  $("responses").replaceChildren(...(items.length ? items : [element("li", "No one has responded yet.", "muted")]));
+
+  const person = state.person;
+  const rows = [[person.name ? "" : "Name", person.name], ["Address", person.address], ["Notes", person.notes]].filter(([label, value]) => label && value);
+  $("person-section").hidden = !rows.length;
+  $("person-heading").textContent = person.name ? `About ${person.name}` : "Person";
+  $("person").replaceChildren(...rows.flatMap(([label, value]) => [element("dt", label), element("dd", value)]));
+}
+
+function showFrame() {
+  $("frame").src = frames[frameIndex];
+  $("counter").textContent = `${frameIndex + 1} / ${frames.length}`;
+}
+setInterval(() => {  // loop the frames, holding the last one briefly
+  if (frames.length < 2 || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  frameIndex = (frameIndex + 1) % (frames.length + 2);
+  if (frameIndex < frames.length) showFrame();
+}, FRAME_MS);
+
+async function load() {
+  try {
+    const response = await fetch(`${base}/state?device=${device}`, {cache: "no-store"});
+    if (response.status === 404) { $("alert").hidden = true; $("expired").hidden = false; return; }
+    if (!response.ok) return;
+    const first = state === null;
+    state = await response.json();
+    if (first && state.frames) {
+      frames = Array.from({length: state.frames}, (_, i) => `${base}/frames/${i}.jpg`);
+      frames.forEach((src) => { new Image().src = src; });  // preload so the loop does not stutter
+      $("player").hidden = false;
+      showFrame();
+    }
+    render();
+    if (!seenSent) { seenSent = true; await respond("seen"); }  // opening the link is what marks it seen
+  } catch {}  // offline for a moment: keep what is shown
+}
+
+async function respond(action) {
+  try {
+    await fetch(`${base}/respond`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({device, action})});
+  } catch { return; }
+  await load();
+}
+
+$("btn-emergency").onclick = () => { $("btn-emergency").disabled = true; respond("emergency"); };  // demo: records only, places no call
+
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>

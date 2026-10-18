@@ -102,6 +102,7 @@
   .checks li { display: grid; grid-template-columns: 96px 104px 1fr; gap: 8px; padding: 4px 8px; cursor: pointer; }
   .checks li.on { background: var(--raised); }
   .message.cleared, .message.ended { opacity: .6; }
+  .message .responses { color: var(--calm); margin-top: 4px; }
   .link { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; }
 
   /* model input */
@@ -157,7 +158,7 @@
 <header>
   <h1>Elder Safety Monitor</h1>
   <div class="actions">
-    <div class="status"><span id="st-stage1">Detector loading</span><span id="st-vlm">Verifier loading</span></div>
+    <div class="status"><span id="st-stage1">Detector loading</span><span id="st-vlm">Verifier loading</span><span id="st-phone" hidden></span></div>
     <button class="record" id="btn-record"><span class="dot"></span><span id="record-label">Start camera</span></button>
     <label class="file">Play video file<input type="file" id="file" accept="video/*"></label>
   </div>
@@ -244,6 +245,7 @@
         <label class="check"><input type="checkbox" id="cfg-sound" checked>Play a sound on alert</label>
       </div>
       <div class="button-row"><button id="btn-save-defaults" hidden>Save as user default</button><button id="btn-reset-defaults" hidden>Reset to system default</button><span class="muted small" id="defaults-status"></span></div>
+      <div class="button-row"><button id="btn-notify-test">Send test notification</button><span class="muted small" id="phone-status"></span></div>
       <p class="muted small">Default thresholds come from the validation calibration half: falling 0.2010 keeps 98% recall, vomiting 0.1146 keeps 95%. When the verifier sees a normal activity, the alert is held and rechecked on the newest video; it is withdrawn only after the set number of normal rechecks in a row, and stays in the log. Without a verifier answer, relatives are notified; without new video to recheck, the alert ends without notifying.</p>
       <details><summary>Prompt sent to the verifier</summary><pre id="prompt"></pre></details>
     </div>
@@ -378,6 +380,7 @@ function bindField(id, changes) {
   $(id).addEventListener("change", () => postConfig(changes()));
 }
 $("cfg-verifier").onchange = () => postConfig({verifier: $("cfg-verifier").checked});
+$("btn-notify-test").onclick = () => fetch("/api/notify/test", {method: "POST"});
 $("btn-save-defaults").onclick = () => fetch("/api/config/save", {method: "POST"});
 $("btn-reset-defaults").onclick = () => {
   if (Object.keys(state.defaults.user).length && !confirm("Reset all settings to the system defaults and delete your saved user defaults?")) return;
@@ -535,6 +538,13 @@ function messageText(alert) {
   const v = alert.verifier, description = v.status === "done" ? (v.answer?.evidence || "") : "";
   return `Possible ${alert.event_name} detected at ${clock(alert.wall)}. ${description} Please check on them now.`;
 }
+// Delivery of one phone notification (an alert's, or the Settings test).
+const phoneLine = (record) => record.status === "sending" ? "Sending to phones…"
+  : record.status === "sent" ? `Sent to phones at ${clock(record.wall)}, ${record.page ? "with the alert page" : "text only"}.`
+  : `Phone notification failed: ${record.error}`;
+// What relatives did on the alert page: opening it marks it seen; the emergency button is demo only.
+const responsesLine = (responses) => (responses || []).map((r) => r.action === "emergency"
+  ? `${r.name} pressed Call 911 at ${clock(r.wall)} (demo)` : `${r.name} saw it at ${clock(r.wall)}`).join(". ");
 const MESSAGE_LABEL = {notified: "Message sent to relatives", checking: "Message to relatives, sent unless the verifier sees a normal activity",
   on_hold: "Message to relatives, sent if a recheck fails", cleared: "Message to relatives, not sent", ended: "Message to relatives, not sent"};
 
@@ -599,7 +609,7 @@ function renderVerifier(alerts) {
         ${facts}
       </dl>`;
   }
-  if (!manual) html += `<div class="message ${alert.status}"><div class="muted small">${MESSAGE_LABEL[alert.status] || "Message to relatives"}</div>${escapeHtml(messageText(alert))}</div>`;
+  if (!manual) html += `<div class="message ${alert.status}"><div class="muted small">${MESSAGE_LABEL[alert.status] || "Message to relatives"}</div>${escapeHtml(messageText(alert))}${alert.phone ? `<div class="muted small">${escapeHtml(phoneLine(alert.phone))}</div>` : ""}${alert.responses?.length ? `<div class="small responses">${escapeHtml(responsesLine(alert.responses))}.</div>` : ""}</div>`;
   if (v.status === "done") html += `<details><summary>Raw verifier output</summary><pre>${escapeHtml(v.raw)}</pre></details>`;
   $("vf-result").innerHTML = html;
   $("vf-result").querySelectorAll(".checks li").forEach((li) => li.onclick = () => {
@@ -664,7 +674,7 @@ function renderStatus(state) {
   const s1 = state.stage1, v = state.verifier;
   if (!("recheck_s" in state.config)) {  // the page is newer than the running server
     $("st-stage1").className = "bad"; $("st-stage1").textContent = "Server is out of date, restart it"; $("st-stage1").title = ""; $("st-stage1").hidden = false;
-    $("st-vlm").hidden = true;
+    $("st-vlm").hidden = true; $("st-phone").hidden = true;
     return;
   }
   $("st-vlm").hidden = false;
@@ -677,6 +687,21 @@ function renderStatus(state) {
     : v.status.startsWith("exited") ? "Verifier stopped" : "Verifier loading";
   $("st-vlm").title = v ? v.status : "";
   $("st-vlm").hidden = !!v && v.status === "ready" && !v.pending;
+  const phone = state.phone, link = phone ? phone.link : "off";
+  $("st-phone").hidden = link === "ready" || link === "off";
+  $("st-phone").className = link.startsWith("failed") ? "bad" : "warn";
+  $("st-phone").textContent = link.startsWith("failed") ? "Phone alert page unavailable" : "Phone link starting";
+  $("st-phone").title = link;
+  $("btn-notify-test").disabled = !phone;
+  const test = phone && phone.test;
+  $("phone-status").textContent = !phone ? "Phone notifications are off. Set ntfy_topic in demo_local.json and restart the server."
+    : test ? phoneLine(test.phone) + (test.responses.length ? ` ${responsesLine(test.responses)}.` : "")
+    : link === "ready" ? "Phones subscribed to the topic get alerts with a link to the alert page."
+    : link.startsWith("failed") ? `Phones get text only: ${link.replace("failed: ", "")}.` : "Starting the alert page link…";
+  if (phone && link === "ready") {  // phones register a name from the startup push, once per server start
+    $("phone-status").textContent += phone.registered.length ? ` Registered phones: ${phone.registered.join(", ")}.`
+      : phone.registration?.status === "failed" ? " The registration push failed." : " No phone has registered yet.";
+  }
 }
 
 // ---------------------------------------------------------------- render loop

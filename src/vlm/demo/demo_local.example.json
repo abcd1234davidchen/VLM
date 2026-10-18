@@ -1,0 +1,16 @@
+{
+  "ntfy_topic": "elder-<random, from: python3 -c \"import secrets; print(secrets.token_urlsafe(12))\">",
+  "person": {
+    "name": "Grandma Mei",
+    "address": "No. 100, Example Rd., Gushan Dist., Kaohsiung",
+    "notes": "Type 2 diabetes. Takes a blood thinner. Walks with a cane."
+  },
+  "relatives": [
+    {
+      "name": "Ben"
+    },
+    {
+      "name": "Lin"
+    }
+  ]
+}
