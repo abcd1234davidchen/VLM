@@ -137,7 +137,7 @@
   /* settings */
   .form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 20px; align-items: end; }
   .form label { display: flex; flex-direction: column; gap: 4px; font-size: 16px; color: var(--muted); }
-  .form input[type=number] { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+  .form input[type=number], .form select { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
   .form .check { flex-direction: row; align-items: center; gap: 10px; color: var(--text); }
   .form .check input { width: 18px; height: 18px; }
 
@@ -234,6 +234,7 @@
     <div class="pane" id="pane-settings" hidden>
       <div class="pane-head"><h2>Settings</h2></div>
       <div class="form">
+        <label>Camera<select id="cfg-camera"><option value="">Default camera</option></select></label>
         <label>Falling threshold<input type="number" id="cfg-fall" step="0.01" min="0" max="1"></label>
         <label>Vomiting threshold<input type="number" id="cfg-vomit" step="0.005" min="0" max="1"></label>
         <label>Window length (s)<input type="number" id="cfg-window" step="0.5" min="1" max="10"></label>
@@ -300,13 +301,20 @@ async function newSession() {
 }
 async function startCamera() {
   await stopSource();
+  const open = (camera) => navigator.mediaDevices.getUserMedia({video: {width: {ideal: 1280}, height: {ideal: 720},
+    ...(camera ? {deviceId: {exact: camera}} : {})}, audio: false});
   try {
-    stream = await navigator.mediaDevices.getUserMedia({video: {width: {ideal: 1280}, height: {ideal: 720}}, audio: false});
+    const camera = cameraId();
+    stream = await open(camera).catch((error) => {
+      if (camera && ["OverconstrainedError", "NotFoundError"].includes(error.name)) return open("");  // the chosen camera is gone
+      throw error;
+    });
   } catch (error) {
     $("placeholder").textContent = `The camera could not start: ${error.message}. Check the browser's camera permission.`;
     return;
   }
   video.srcObject = stream;
+  listCameras();  // device names are only readable once camera access is granted
   stage.classList.add("mirrored");
   sourceName = "camera";
   cameraClock = true;
@@ -366,6 +374,23 @@ function sendFrame() {
   }, "image/jpeg", 0.85);
 }
 $("btn-record").onclick = () => sending ? stopSource() : startCamera();
+
+// The camera choice is kept in this browser; a camera that is gone falls back to the default.
+function cameraId() {
+  try { return localStorage.getItem("camera") || ""; } catch (error) { return ""; }
+}
+async function listCameras() {
+  const cameras = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  const chosen = cameraId();
+  $("cfg-camera").replaceChildren(new Option("Default camera", ""), ...cameras.map((d, i) => new Option(d.label || `Camera ${i + 1}`, d.deviceId)));
+  $("cfg-camera").value = cameras.some((d) => d.deviceId === chosen) ? chosen : "";
+}
+$("cfg-camera").onchange = () => {
+  try { localStorage.setItem("camera", $("cfg-camera").value); } catch (error) { /* storage is optional */ }
+  if (stream) startCamera();  // switch the live camera now
+};
+navigator.mediaDevices.addEventListener("devicechange", listCameras);
+listCameras();
 $("file").onchange = (event) => { if (event.target.files[0]) playFile(event.target.files[0]); event.target.value = ""; };
 $("btn-verify").onclick = () => { selectedAlertId = null; fetch("/api/verify", {method: "POST"}); };
 $("banner").onclick = hideBanner;
