@@ -11,3 +11,6 @@
 /dataset/*.gif
 __pycache__/
 RGB_vids
+
+# Live demo user default settings
+/demo_settings.json

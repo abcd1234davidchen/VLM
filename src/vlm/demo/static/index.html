@@ -35,6 +35,7 @@
   .actions { margin-left: auto; display: flex; align-items: center; gap: 12px; }
   .status { display: flex; gap: 20px; font-size: 15px; color: var(--muted); }
   .status span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; background: var(--muted); }
+  .button-row { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
   .status .ok::before { background: var(--calm); } .status .warn::before { background: var(--fall); } .status .bad::before { background: var(--alarm); }
 
   main { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(420px, 1fr); min-height: 0; }
@@ -242,6 +243,7 @@
         <label class="check"><input type="checkbox" id="cfg-verifier">Check alerts with the verifier</label>
         <label class="check"><input type="checkbox" id="cfg-sound" checked>Play a sound on alert</label>
       </div>
+      <div class="button-row"><button id="btn-save-defaults" hidden>Save as user default</button><button id="btn-reset-defaults" hidden>Reset to system default</button><span class="muted small" id="defaults-status"></span></div>
       <p class="muted small">Default thresholds come from the validation calibration half: falling 0.2010 keeps 98% recall, vomiting 0.1146 keeps 95%. When the verifier sees a normal activity, the alert is held and rechecked on the newest video; it is withdrawn only after the set number of normal rechecks in a row, and stays in the log. Without a verifier answer, relatives are notified; without new video to recheck, the alert ends without notifying.</p>
       <details><summary>Prompt sent to the verifier</summary><pre id="prompt"></pre></details>
     </div>
@@ -376,6 +378,27 @@ function bindField(id, changes) {
   $(id).addEventListener("change", () => postConfig(changes()));
 }
 $("cfg-verifier").onchange = () => postConfig({verifier: $("cfg-verifier").checked});
+$("btn-save-defaults").onclick = () => fetch("/api/config/save", {method: "POST"});
+$("btn-reset-defaults").onclick = () => {
+  if (Object.keys(state.defaults.user).length && !confirm("Reset all settings to the system defaults and delete your saved user defaults?")) return;
+  fetch("/api/config/reset", {method: "POST"});
+};
+// True when every setting in `defaults` has the value it has in `config`.
+function matches(config, defaults) {
+  return Object.entries(defaults).every(([key, value]) => key === "thresholds"
+    ? Object.entries(value).every(([code, t]) => config.thresholds[code] === t) : config[key] === value);
+}
+function renderDefaults(state) {
+  const defaults = state.defaults;
+  if (!defaults) { $("btn-save-defaults").hidden = $("btn-reset-defaults").hidden = true; return; }
+  const saved = Object.keys(defaults.user).length > 0;
+  const unsaved = !matches(state.config, {...defaults.system, ...defaults.user,
+    thresholds: {...defaults.system.thresholds, ...defaults.user.thresholds}});
+  $("btn-save-defaults").hidden = !unsaved;
+  $("btn-reset-defaults").hidden = !saved && matches(state.config, defaults.system);
+  $("defaults-status").textContent = unsaved ? "Changes apply now and are lost on restart unless saved as the user default."
+    : saved ? "Using your saved user defaults; they also apply on restart." : "";
+}
 function postConfig(changes) { return fetch("/api/config", {method: "POST", body: JSON.stringify(changes)}); }
 
 // ---------------------------------------------------------------- camera overlay and risk
@@ -667,6 +690,7 @@ function render() {
     $("cfg-recheck").value = state.config.recheck_s; $("cfg-rechecks").value = state.config.rechecks;
   }
   $("cfg-verifier").disabled = !state.verifier;
+  renderDefaults(state);
   if (state.verifier && !$("prompt").textContent) $("prompt").textContent = state.verifier.prompt;
   $("btn-verify").disabled = !state.verifier || state.verifier.status !== "ready" || !state.latest;
   for (const alert of state.alerts) {

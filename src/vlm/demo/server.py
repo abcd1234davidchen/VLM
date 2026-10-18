@@ -49,6 +49,22 @@ STEPS = 40
 THUMB_SIDE = 224  # XCLIP input resolution: what the classifier sees after its processor
 VERIFIER_TIMEOUT_S = 90.0  # notify when a VLM answer takes longer than this
 FRESH_WINDOW_S = 5.0  # a recheck needs a window that ended this recently
+# Settings the page can change, with their types and the command-line options that set them at startup.
+SETTING_KINDS = {"window_s": float, "persist": int, "cooldown_s": float, "verifier": bool, "recheck_s": float, "rechecks": int}
+SETTING_ARGS = {"window_s": "window", "persist": "persist", "cooldown_s": "cooldown", "recheck_s": "recheck", "rechecks": "rechecks"}
+THRESHOLD_ARGS = {"A043": "fall_threshold", "A048": "vomit_threshold"}
+
+
+def parse_settings(changes: dict) -> dict:
+    """The known settings in ``changes``, converted to their types; unknown keys are dropped."""
+    settings = {key: SETTING_KINDS[key](value) for key, value in changes.items() if key in SETTING_KINDS}
+    thresholds = {code: float(value) for code, value in changes.get("thresholds", {}).items() if code in THRESHOLD_ARGS}
+    return settings | ({"thresholds": thresholds} if thresholds else {})
+
+
+def settings_from_args(args: argparse.Namespace) -> dict:
+    return {"thresholds": {code: getattr(args, dest) for code, dest in THRESHOLD_ARGS.items()},
+            "verifier": args.verifier_model != "none"} | {key: getattr(args, dest) for key, dest in SETTING_ARGS.items()}
 
 
 class Verifier:
@@ -91,9 +107,9 @@ class Verifier:
 class Monitor:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
-        self.config = {"thresholds": args.thresholds, "window_s": args.window, "persist": args.persist,
-                       "cooldown_s": args.cooldown, "verifier": args.verifier_model != "none",
-                       "recheck_s": args.recheck, "rechecks": args.rechecks}
+        self.config = settings_from_args(args)
+        # The verifier switch has no command-line option, so a saved user default applies directly.
+        self.config["verifier"] &= args.user_defaults.get("verifier", True)
         self.lock = threading.Lock()
         self.frames: deque[tuple[float, np.ndarray]] = deque()
         self.history: deque[dict] = deque(maxlen=HISTORY)
@@ -109,7 +125,7 @@ class Monitor:
         self.stage1, self.stage1_status = None, "loading"
         self.alerts_dir = args.alerts_dir
         self.alerts_dir.mkdir(parents=True, exist_ok=True)
-        self.verifier = Verifier(args.verifier_model, self._verified, self.alerts_dir / "verifier.log") if self.config["verifier"] else None
+        self.verifier = Verifier(args.verifier_model, self._verified, self.alerts_dir / "verifier.log") if args.verifier_model != "none" else None
         # Per open alert: monotonic deadline of the next recheck or answer, and the last stage-1 step it used.
         self.open: dict[str, dict] = {}
         threading.Thread(target=self._load_and_run, daemon=True).start()
@@ -350,6 +366,7 @@ class Monitor:
             now = time.monotonic()
             fps = sum(now - t < 2.0 for t in self.received) / 2.0
             return {"stage1": self.stage1_status, "config": self.config, "session": self.session,
+                    "defaults": {"system": self.args.system_defaults, "user": self.args.user_defaults},
                     "input_fps": fps, "buffer_frames": len(self.frames), "latest": self.latest,
                     "history": list(self.history), "steps": list(self.steps), "alerts": self.alerts[-30:],
                     "verifier": None if self.verifier is None else
@@ -360,14 +377,23 @@ class Monitor:
         return self.images.get(key)
 
     def update_config(self, changes: dict) -> None:
-        kinds = {"window_s": float, "persist": int, "cooldown_s": float, "verifier": bool, "recheck_s": float, "rechecks": int}
+        settings = parse_settings(changes)
         with self.lock:
-            for code, value in changes.get("thresholds", {}).items():
-                if code in self.config["thresholds"]:
-                    self.config["thresholds"][code] = float(value)
-            for key, value in changes.items():
-                if key in kinds:
-                    self.config[key] = kinds[key](value)
+            self.config["thresholds"] |= settings.pop("thresholds", {})
+            self.config |= settings
+
+    def save_user_defaults(self) -> None:
+        """Store the current settings as the user defaults that the next server start applies."""
+        with self.lock:
+            saved = json.loads(json.dumps(self.config))
+        self.args.settings.write_text(json.dumps(saved, indent=2) + "\n")
+        self.args.user_defaults = saved
+
+    def reset_to_system_defaults(self) -> None:
+        """Apply the defaults written in the code and forget the saved user defaults."""
+        self.args.settings.unlink(missing_ok=True)
+        self.args.user_defaults = {}
+        self.update_config(self.args.system_defaults)
 
 
 def handler(monitor: Monitor):
@@ -418,6 +444,10 @@ def handler(monitor: Monitor):
                     return self._json({"id": monitor.verify_now()})
                 elif url.path == "/api/config":
                     monitor.update_config(json.loads(body))
+                elif url.path == "/api/config/save":
+                    monitor.save_user_defaults()
+                elif url.path == "/api/config/reset":
+                    monitor.reset_to_system_defaults()
                 else:
                     return self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             except (KeyError, ValueError) as error:
@@ -446,8 +476,17 @@ def main() -> None:
     parser.add_argument("--rechecks", type=int, default=3, help="consecutive normal-activity rechecks that clear an alert on hold")
     parser.add_argument("--min-interval", type=float, default=0.5, help="minimum seconds between inference steps")
     parser.add_argument("--alerts-dir", type=Path, default=Path("cache/demo_alerts"))
+    parser.add_argument("--settings", type=Path, default=Path("demo_settings.json"),
+                        help="user defaults saved from the Settings pane; explicit command-line options override them")
+    # System defaults are the values written above; saved user defaults replace them, and explicit options win.
+    system_defaults = settings_from_args(parser.parse_args([]))
+    settings_path = parser.parse_known_args()[0].settings
+    user_defaults = parse_settings(json.loads(settings_path.read_text())) if settings_path.is_file() else {}
+    saved = user_defaults | user_defaults.get("thresholds", {})
+    parser.set_defaults(**{dest: saved[key] for key, dest in (SETTING_ARGS | THRESHOLD_ARGS).items() if key in saved})
     args = parser.parse_args()
-    args.thresholds = {"A043": args.fall_threshold, "A048": args.vomit_threshold}
+    system_defaults["verifier"] = args.verifier_model != "none"  # checks cannot be on without a verifier
+    args.system_defaults, args.user_defaults = system_defaults, user_defaults
     monitor = Monitor(args)
     server = ThreadingHTTPServer((args.host, args.port), handler(monitor))
     print(f"Demo running at http://{args.host}:{args.port}  (the detector and the verifier load in the background)", flush=True)
