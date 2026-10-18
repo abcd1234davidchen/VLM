@@ -203,6 +203,44 @@ def run(args: argparse.Namespace) -> None:
     print(json.dumps(report["summary"], indent=2))
 
 
+def serve(args: argparse.Namespace) -> None:
+    """Keep one model loaded and answer JSON-line requests {"id", "frames": [jpeg paths]} on stdin.
+
+    Replies go to stdout prefixed with ``@@ `` so library output on stdout cannot be mistaken for one.
+    """
+    import sys
+
+    from mlx_vlm import generate, load
+    from mlx_vlm.prompt_utils import apply_chat_template
+
+    model, processor = load(args.model)
+    prompts: dict[int, tuple[str, str]] = {}
+
+    def reply(payload: dict[str, object]) -> None:
+        print("@@ " + json.dumps(payload, ensure_ascii=False), flush=True)
+
+    reply({"ready": True, "model": args.model})
+    for line in sys.stdin:
+        request = json.loads(line)
+        frames = request["frames"]
+        if len(frames) not in prompts:
+            text = PROMPT.format(n=len(frames))
+            prompts[len(frames)] = (text, apply_chat_template(processor, model.config, text, num_images=len(frames),
+                                                              enable_thinking=False))
+        start = time.perf_counter()
+        try:
+            output = generate(model, processor, prompts[len(frames)][1], image=frames, max_tokens=160,
+                              temperature=0.0, enable_thinking=False, verbose=False)
+        except Exception as error:  # report and keep serving
+            reply({"id": request["id"], "error": repr(error)})
+            continue
+        answer = parse_answer(output.text)
+        choice = answer["choice"] if answer else None
+        reply({"id": request["id"], "choice": choice, "choice_text": CHOICES[choice][0] if choice else None,
+               "tier": tier(choice), "answer": answer, "raw": output.text,
+               "latency_s": round(time.perf_counter() - start, 2), "peak_memory_gb": round(output.peak_memory, 2)})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -221,7 +259,11 @@ def main() -> None:
     bake.add_argument("--num-frames", type=int, default=8)
     bake.add_argument("--max-side", type=int, default=768)
     bake.add_argument("--limit", type=int, default=0, help="Only run the first N clips (smoke)")
+    worker = sub.add_parser("serve", help="Answer verification requests on stdin with one loaded model (live demo)")
+    worker.add_argument("--model", required=True)
     args = parser.parse_args()
+    if args.command == "serve":
+        return serve(args)
     if args.command == "select":
         clips = select_clips(args.flagged, args.split, args.seed, args.true_per_event)
         args.output.parent.mkdir(parents=True, exist_ok=True)
