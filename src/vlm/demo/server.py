@@ -6,8 +6,10 @@ alert fires when the falling or nausea/vomiting probability reaches its own thre
 consecutive steps (one by default: the verifier filters false alerts, and falling scores often cross the
 threshold on single steps).
 
-The VLM then checks the alert window together with 8 frames from the ``window`` seconds before it, so it
-sees what led up to the alert; rechecks send only the newest window. Any answer other than a normal activity notifies at once. A
+The VLM then checks the alert window together with 4 frames from the ``window`` seconds before it and 4
+from the ``window`` seconds after it, so it sees what led up to the alert and how it ended (a fall usually
+crosses the threshold before the person is down); the check waits for those later frames, and rechecks
+send only the newest window. Any answer other than a normal activity notifies at once. A
 normal-activity answer puts the alert on hold instead of deleting it: the VLM rechecks the newest
 window every ``recheck`` seconds, any recheck that is not a normal activity notifies, and only
 ``rechecks`` consecutive normal-activity answers clear the alert, which stays in the log. A missing
@@ -57,6 +59,8 @@ STEPS = 40
 THUMB_SIDE = 224  # XCLIP input resolution: what the classifier sees after its processor
 VERIFIER_TIMEOUT_S = 90.0  # notify when a VLM answer takes longer than this
 FRESH_WINDOW_S = 5.0  # a recheck needs a window that ended this recently
+BEFORE_FRAMES, AFTER_FRAMES = 4, 4  # first check only, around the 8 alert frames
+AFTER_SLACK_S = 2.0  # send the first check this long after its later frames were due, with what has arrived
 # Settings the page can change, with their types and the command-line options that set them at startup.
 SETTING_KINDS = {"window_s": float, "persist": int, "cooldown_s": float, "verifier": bool, "recheck_s": float, "rechecks": int}
 SETTING_ARGS = {"window_s": "window", "persist": "persist", "cooldown_s": "cooldown", "recheck_s": "recheck", "rechecks": "rechecks"}
@@ -187,12 +191,12 @@ class Monitor:
         indices = np.linspace(0, len(selected) - 1, NUM_FRAMES).round().astype(int)
         return np.stack([selected[i][1] for i in indices]), [selected[i][0] for i in indices]
 
-    def _context_locked(self, start: float) -> list[np.ndarray]:
-        """Up to 8 uniform frames from the ``window`` seconds before ``start``; fewer right after a source starts."""
-        selected = [f for t, f in self.frames if start - self.config["window_s"] <= t < start]
-        if len(selected) <= NUM_FRAMES:
+    def _sample_locked(self, start: float, end: float, count: int) -> list[np.ndarray]:
+        """Up to ``count`` uniform frames with ``start < t < end``; fewer near the start or end of a source."""
+        selected = [f for t, f in self.frames if start < t < end]
+        if len(selected) <= count:
             return selected
-        return [selected[i] for i in np.linspace(0, len(selected) - 1, NUM_FRAMES).round().astype(int)]
+        return [selected[i] for i in np.linspace(0, len(selected) - 1, count).round().astype(int)]
 
     # ------------------------------------------------------------------ inference
     def _load_and_run(self) -> None:
@@ -282,7 +286,8 @@ class Monitor:
 
     def _raise_alert_locked(self, result: dict, frames: np.ndarray, manual: bool = False) -> str:
         alert_id = time.strftime("%Y%m%d-%H%M%S") + f"-{len(self.alerts):03d}"
-        context = self._context_locked(result["window"][0])
+        start = result["window"][0]
+        context = self._sample_locked(start - self.config["window_s"], start, BEFORE_FRAMES)
         paths, urls = self._save_frames(self.alerts_dir / alert_id, [*context, *frames])
         thresholds = self.config["thresholds"]
         event = max(result["events"], key=lambda code: result["events"][code] / thresholds[code])
@@ -292,13 +297,15 @@ class Monitor:
                  "priority": "manual" if manual else "high",
                  "kind": "manual" if manual else "alert", "step": result["step"],
                  "model_events": {name: value["events"] for name, value in result["models"].items()},
-                 "frames": urls, "context_frames": len(context), "verifier": {"status": "pending"}, "checks": [],
+                 "frames": urls, "context_frames": len(context), "after_frames": 0, "verifier": {"status": "pending"}, "checks": [],
                  "status": "manual" if manual else "checking", "reason": None, "decided_wall": None, "next_check_wall": None}
         self.alerts.append(alert)
-        if self.verifier and (self.config["verifier"] or manual):
+        if self.verifier and manual:
             self.verifier.submit(alert_id, paths)
-            if not manual:
-                self.open[alert_id] = {"deadline": time.monotonic() + VERIFIER_TIMEOUT_S, "waiting": True, "step": result["step"]}
+        elif self.verifier and self.config["verifier"]:
+            # Wait for the frames after the alert window; _watch_open_alerts sends the check.
+            self.open[alert_id] = {"collecting": True, "frames": [*context, *frames], "end": result["t"], "session": self.session,
+                                   "deadline": time.monotonic() + self.config["window_s"] + AFTER_SLACK_S, "step": result["step"]}
         else:
             alert["verifier"] = {"status": "disabled"}
             if not manual:
@@ -443,6 +450,10 @@ class Monitor:
                 now = time.monotonic()
                 for alert in [a for a in self.alerts if a["id"] in self.open]:
                     entry = self.open[alert["id"]]
+                    if entry.get("collecting"):
+                        if now >= entry["deadline"] or self._after_ready_locked(entry):
+                            self._send_first_check_locked(alert, entry)
+                        continue
                     if now < entry["deadline"]:
                         continue
                     if entry["waiting"] or self.verifier is None or self.verifier.status.startswith("exited"):
@@ -450,6 +461,20 @@ class Monitor:
                     else:
                         self._start_recheck_locked(alert, entry)
                     self._save_alert(alert)
+
+    def _after_ready_locked(self, entry: dict) -> bool:
+        """The frames after the alert window have arrived, or the source changed and they never will."""
+        return entry["session"] != self.session or (bool(self.frames) and self.frames[-1][0] >= entry["end"] + self.config["window_s"])
+
+    def _send_first_check_locked(self, alert: dict, entry: dict) -> None:
+        after = (self._sample_locked(entry["end"], entry["end"] + self.config["window_s"] + 1e-3, AFTER_FRAMES)
+                 if entry["session"] == self.session else [])
+        paths, alert["frames"] = self._save_frames(self.alerts_dir / alert["id"], [*entry["frames"], *after])
+        alert["after_frames"] = len(after)
+        # Rechecks start from windows newer than the frames this check already saw.
+        self.open[alert["id"]] = {"deadline": time.monotonic() + VERIFIER_TIMEOUT_S, "waiting": True, "step": self.step}
+        self.verifier.submit(alert["id"], paths)
+        self._save_alert(alert)
 
     def _start_recheck_locked(self, alert: dict, entry: dict) -> None:
         latest = self.latest

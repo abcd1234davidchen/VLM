@@ -81,7 +81,7 @@ training options.
 
 ## Live Alert Demo
 
-The live demo runs the locked stage-1 configuration (A on center_zoom70 plus B on the person crop) as the detector on a sliding window from the webcam or a local video file, raises an alert when the falling (A043) or nausea/vomiting (A048) probability reaches its own calibrated threshold in one step (`--persist`), and asks the verifier, a local VLM, to check the alert window together with 8 frames from the window before it, so it sees what led up to the alert. Staggering and the body-pain poses (A042, A044–A047) are not alerted because their acted NTU versions are not reliable enough:
+The live demo runs the locked stage-1 configuration (A on center_zoom70 plus B on the person crop) as the detector on a sliding window from the webcam or a local video file, raises an alert when the falling (A043) or nausea/vomiting (A048) probability reaches its own calibrated threshold in one step (`--persist`), and asks the verifier, a local VLM, to check the alert window together with 4 frames from the window before it and 4 from the window after it, so it sees what led up to the alert and how it ended; the first check therefore goes out one window (2.5 seconds) after the alert. Staggering and the body-pain poses (A042, A044–A047) are not alerted because their acted NTU versions are not reliable enough:
 
 ```bash
 uv run --with mediapipe python -m vlm.demo.server
