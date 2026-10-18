@@ -57,6 +57,16 @@ def recall_threshold(score, truth, target=0.95):
     return float(values[len(values) - math.ceil(target * len(values))])
 
 
+def calibration_mask(labels, ids):
+    """Within-class sample-ID hash halves shared by every alert threshold audit."""
+    cal = torch.zeros(len(labels), dtype=torch.bool)
+    for cls in range(120):
+        indices = labels.eq(cls).nonzero().flatten().tolist()
+        indices.sort(key=lambda i: hashlib.sha256(f"alert-calibration42:{ids[i]}".encode()).hexdigest())
+        cal[indices[:len(indices) // 2]] = True
+    return cal
+
+
 def saved_prediction_audit(payload, names):
     logits, labels, ids = payload["logits"], payload["labels"], payload["sample_ids"]
     prediction = logits.argmax(-1)
@@ -73,11 +83,7 @@ def saved_prediction_audit(payload, names):
                      "top_confusions": [{"class_id": int(i) + 1, "name": names[int(i) + 1], "count": int(v)}
                                         for i, v in zip(indices, counts) if v > 0]})
     rows.sort(key=lambda row: (row["accuracy"], row["class_id"]))
-    cal = torch.zeros(len(labels), dtype=torch.bool)
-    for cls in range(120):
-        indices = labels.eq(cls).nonzero().flatten().tolist()
-        indices.sort(key=lambda i: hashlib.sha256(f"alert-calibration42:{ids[i]}".encode()).hexdigest())
-        cal[indices[:len(indices) // 2]] = True
+    cal = calibration_mask(labels, ids)
     evaluation = ~cal
     probabilities = logits.softmax(-1)
     attention_indices = torch.tensor([cls - 1 for cls in ATTENTION_IDS])
