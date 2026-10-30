@@ -99,7 +99,7 @@ When the server starts, each phone receives a push asking it to register a name.
 
 ## Code layout
 
-The demo is in [`src/vlm/demo/`](src/vlm/demo/), and the final models were trained with [`patch16_crop_aware.py`](src/vlm/training/patch16_crop_aware.py) and [`patch16_person_crop.py`](src/vlm/training/patch16_person_crop.py) in `src/vlm/training/`. The `vlm` CLI (`uv run vlm --help`) and `archive/` hold earlier pipelines and scripts. See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full layout.
+The demo is in [`src/vlm/demo/`](src/vlm/demo/), and the final models were trained with [`patch16_crop_aware.py`](src/vlm/training/patch16_crop_aware.py) and [`patch16_person_crop.py`](src/vlm/training/patch16_person_crop.py) in `src/vlm/training/`. The `vlm` CLI (`uv run vlm --help`) and `archive/` hold earlier pipelines and scripts.
 
 ## Research history
 
@@ -118,3 +118,4 @@ Other ideas did not help enough to keep, including guiding the model with skelet
 - Hu et al., [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685), ICLR 2022.
 - [MediaPipe Pose Landmarker](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker).
 - Phone notification: [ntfy](https://ntfy.sh), [Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/).
+
