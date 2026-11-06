@@ -23,9 +23,17 @@ flowchart TD
         qwen -- Yes --> phone[Phone<br>notification]
         recheck -- Yes --> phone
     end
-    det -- Alert --> ver
-    style det fill:none,stroke:#888
-    style ver fill:none,stroke:#888
+    det --> alert([Alert]) --> ver
+    classDef detector fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef verifier fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef alarm fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef notify fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class feed,person,zoom,avg,thr detector
+    class qwen,recheck verifier
+    class alert alarm
+    class phone notify
+    style det fill:none,stroke:#2563eb,stroke-width:2px
+    style ver fill:none,stroke:#d97706,stroke-width:2px
 ```
 
 1. **Window**: each step takes 8 uniformly spaced frames from the last 2.5 seconds of video.
