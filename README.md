@@ -10,10 +10,10 @@ The detector is [`microsoft/xclip-base-patch16`](https://huggingface.co/microsof
 flowchart TD
     subgraph det [Detector]
         direction LR
-        feed[Video feed] --> modelB[Model B<br>person crop]
-        feed --> modelA[Model A<br>center zoom]
-        modelA --> avg[Average]
-        modelB --> avg
+        feed[Video feed] --> person[Person model]
+        feed --> zoom[Zoom model]
+        zoom --> avg[Average]
+        person --> avg
         avg --> thr{Above<br>threshold?}
     end
     subgraph ver [Verifier]
@@ -29,7 +29,7 @@ flowchart TD
 ```
 
 1. **Window**: each step takes 8 uniformly spaced frames from the last 2.5 seconds of video.
-2. **Detector**: two XCLIP patch16 classifiers, each with LoRA on the upper two vision blocks and the MIT q/v projections plus a 120-class head. Model A sees the center 70% square of the frame; model B sees a square crop around the person found with MediaPipe pose. The prediction is the mean of their two softmaxes.
+2. **Detector**: two XCLIP patch16 classifiers, each with LoRA on the upper two vision blocks and the MIT q/v projections plus a 120-class head. The zoom model sees the center 70% square of the frame; the person model sees a square crop around the person found with MediaPipe pose. The prediction is the mean of their two softmaxes.
 3. **Alert**: an alert fires when the falling (A043) or nausea/vomiting (A048) probability reaches its own threshold, calibrated on validation. Staggering and the body-pain poses (A042, A044–A047) are not alerted because their acted NTU versions are not reliable enough.
 4. **Verifier**: the multimodal LLM sees 4 frames from before the alert window, the 8 alert frames, and 4 frames after it, and answers one multiple-choice question. An alert answer, "cannot tell", or no answer notifies at once. A normal-activity answer holds the alert: the LLM rechecks the newest window every 15 seconds, any recheck that is not a normal activity notifies, and three normal rechecks in a row clear the alert.
 5. **Notifications**: relatives' phones receive a push notification with a link to an alert page that shows what the verifier saw.
@@ -42,7 +42,7 @@ The final configuration was evaluated once on the participant-disjoint NTU RGB+D
 
 | Test (20,880 clips) | Accuracy | Macro-F1 | Falling (A043) correct / 102 | Nausea/vomiting (A048) correct / 102 |
 | --- | ---: | ---: | ---: | ---: |
-| Model A on center zoom + model B on person crop | 87.95% | 89.20% | 101 | 88 |
+| Zoom model + person model | 87.95% | 89.20% | 101 | 88 |
 
 ### Verifier
 
@@ -70,8 +70,8 @@ The two detector checkpoints are in the [`models-v1` release](https://github.com
 ```bash
 uv sync
 gh release download models-v1 -p '*.tar'
-tar -xf patch16_crop_aware_seed42.tar     # model A
-tar -xf patch16_person_crop_seed42.tar    # model B
+tar -xf patch16_crop_aware_seed42.tar     # zoom model
+tar -xf patch16_person_crop_seed42.tar    # person model
 uv run hf download microsoft/xclip-base-patch16 --revision d6184e3fd8780d04c85d0f1eabe5f94bf44d98f6
 curl -L --create-dirs -o artifacts/hand_roi_models/pose_landmarker_lite.task \
   https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
