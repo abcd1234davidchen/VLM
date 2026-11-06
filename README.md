@@ -99,7 +99,7 @@ When the server starts, each phone receives a push asking it to register a name.
 
 ## Code layout
 
-The demo is in [`src/vlm/demo/`](src/vlm/demo/), and the final models were trained with [`patch16_crop_aware.py`](src/vlm/training/patch16_crop_aware.py) and [`patch16_person_crop.py`](src/vlm/training/patch16_person_crop.py) in `src/vlm/training/`. The `vlm` CLI (`uv run vlm --help`) and `archive/` hold earlier pipelines and scripts.
+The demo is in [`src/vlm/demo/`](src/vlm/demo/), and the final models were trained with [`patch16_crop_aware.py`](src/vlm/training/patch16_crop_aware.py) and [`patch16_person_crop.py`](src/vlm/training/patch16_person_crop.py) in `src/vlm/training/`. The `vlm` CLI (`uv run vlm --help`) holds the earlier pipelines, and [`archive/`](archive/) keeps the project's first scripts.
 
 ## Research history
 
