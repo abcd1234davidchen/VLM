@@ -247,7 +247,7 @@
       </div>
       <div class="button-row"><button id="btn-save-defaults" hidden>Save as user default</button><button id="btn-reset-defaults" hidden>Reset to system default</button><span class="muted small" id="defaults-status"></span></div>
       <div class="button-row"><button id="btn-notify-test">Send test notification</button><span class="muted small" id="phone-status"></span></div>
-      <p class="muted small">Default thresholds come from the validation calibration half: falling 0.2010 keeps 98% recall, vomiting 0.1146 keeps 95%. When the verifier sees a normal activity, the alert is held and rechecked on the newest video; it is withdrawn only after the set number of normal rechecks in a row, and stays in the log. Without a verifier answer, relatives are notified; without new video to recheck, the alert ends without notifying.</p>
+      <p class="muted small">Default thresholds come from the validation calibration half: falling 0.2010 keeps 98% recall, vomiting 0.1146 keeps 95%. When the verifier sees a normal activity, the alert is held and rechecked on the video that follows, at fixed steps of video time after the alert; it is withdrawn only after the set number of normal rechecks in a row, and stays in the log. Without a verifier answer, relatives are notified; without new video to recheck, the alert ends without notifying.</p>
       <details><summary>Prompt sent to the verifier</summary><pre id="prompt"></pre></details>
     </div>
   </section>

@@ -8,11 +8,12 @@ threshold on single steps).
 
 The VLM then checks the alert window together with 4 frames from the ``window`` seconds before it and 4
 from the ``window`` seconds after it, so it sees what led up to the alert and how it ended (a fall usually
-crosses the threshold before the person is down); the check waits for those later frames, and rechecks
-send only the newest window. Any answer other than a normal activity notifies at once. A
-normal-activity answer puts the alert on hold instead of deleting it: the VLM rechecks the newest
-window every ``recheck`` seconds, any recheck that is not a normal activity notifies, and only
-``rechecks`` consecutive normal-activity answers clear the alert, which stays in the log. A missing
+crosses the threshold before the person is down); the check waits for those later frames. Any answer
+other than a normal activity notifies at once. A normal-activity answer puts the alert on hold instead
+of deleting it: each recheck sends the 8 frames of the ``window`` seconds that start ``recheck`` seconds
+of video after the frames the previous check ended on, so the frames checked depend only on when the
+alert fired, not on how fast the VLM answers. Any recheck that is not a normal activity notifies, and
+only ``rechecks`` consecutive normal-activity answers clear the alert, which stays in the log. A missing
 answer also notifies, so a wrong normal-activity answer costs a delay, never a missed alert. If there is no
 new video to recheck (the video file ended or the source stopped), the alert ends as ``ended`` without
 notifying and stays in the log.
@@ -58,7 +59,7 @@ HISTORY = 600
 STEPS = 40
 THUMB_SIDE = 224  # XCLIP input resolution: what the classifier sees after its processor
 VERIFIER_TIMEOUT_S = 90.0  # notify when a VLM answer takes longer than this
-FRESH_WINDOW_S = 5.0  # a recheck needs a window that ended this recently
+FRESH_WINDOW_S = 5.0  # a recheck still waiting for its frames ends the alert when no frame arrived this recently
 BEFORE_FRAMES, AFTER_FRAMES = 4, 4  # first check only, around the 8 alert frames
 AFTER_SLACK_S = 2.0  # send the first check this long after its later frames were due, with what has arrived
 # Settings the page can change, with their types and the command-line options that set them at startup.
@@ -138,7 +139,7 @@ class Monitor:
         self.alerts_dir = args.alerts_dir
         self.alerts_dir.mkdir(parents=True, exist_ok=True)
         self.verifier = Verifier(args.verifier_model, self._verified, self.alerts_dir / "verifier.log") if args.verifier_model != "none" else None
-        # Per open alert: monotonic deadline of the next recheck or answer, and the last stage-1 step it used.
+        # Per open alert: its phase, the monotonic deadline of an answer, and the recheck windows sampled so far.
         self.open: dict[str, dict] = {}
         self.notifier, self.test_alert = None, None
         self.registrations: dict[str, str] = {}  # phone device id -> registered name, for this tunnel's lifetime
@@ -304,8 +305,9 @@ class Monitor:
             self.verifier.submit(alert_id, paths)
         elif self.verifier and self.config["verifier"]:
             # Wait for the frames after the alert window; _watch_open_alerts sends the check.
-            self.open[alert_id] = {"collecting": True, "frames": [*context, *frames], "end": result["t"], "session": self.session,
-                                   "deadline": time.monotonic() + self.config["window_s"] + AFTER_SLACK_S, "step": result["step"]}
+            self.open[alert_id] = {"collecting": True, "waiting": False, "frames": [*context, *frames], "end": result["t"],
+                                   "session": self.session, "deadline": time.monotonic() + self.config["window_s"] + AFTER_SLACK_S,
+                                   "rechecks": []}
         else:
             alert["verifier"] = {"status": "disabled"}
             if not manual:
@@ -409,9 +411,15 @@ class Monitor:
                     if response["device"] == device:
                         response["name"] = name
 
-    def _schedule_recheck_locked(self, alert: dict, step: int) -> None:
-        self.open[alert["id"]] = {"deadline": time.monotonic() + self.config["recheck_s"], "waiting": False, "step": step}
-        alert["next_check_wall"] = time.time() + self.config["recheck_s"]
+    def _recheck_end(self, entry: dict, number: int) -> float:
+        """Video time that recheck ``number`` ends on; its window starts ``recheck`` seconds after the check before it ended."""
+        return entry["end"] + self.config["window_s"] + number * (self.config["recheck_s"] + self.config["window_s"])
+
+    def _schedule_recheck_locked(self, alert: dict) -> None:
+        entry = self.open[alert["id"]]
+        entry["waiting"] = False
+        wait = self._recheck_end(entry, len(alert["checks"]) + 1) - (self.last_frame_t or 0.0)
+        alert["next_check_wall"] = time.time() + max(0.0, wait)
 
     def _verified(self, payload: dict) -> None:
         alert_id, _, recheck = payload["id"].partition("/r")
@@ -426,7 +434,7 @@ class Monitor:
                 if alert["status"] == "checking":
                     if normal:
                         alert["status"] = "on_hold"
-                        self._schedule_recheck_locked(alert, self.open.get(alert_id, {}).get("step", alert["step"]))
+                        self._schedule_recheck_locked(alert)
                     else:
                         self._decide_locked(alert, "notified", {"confirmed": "Verifier sees an alert event", "uncertain": "Verifier is unsure"}.get(
                             answer.get("tier"), "Verifier failed") if answer["status"] == "done" else "Verifier failed")
@@ -439,7 +447,7 @@ class Monitor:
                     elif int(recheck) >= self.config["rechecks"]:
                         self._decide_locked(alert, "cleared", f"{recheck} rechecks in a row saw a normal activity")
                     else:
-                        self._schedule_recheck_locked(alert, self.open[alert_id]["step"])
+                        self._schedule_recheck_locked(alert)
             self._save_alert(alert)
 
     def _watch_open_alerts(self) -> None:
@@ -450,17 +458,37 @@ class Monitor:
                 now = time.monotonic()
                 for alert in [a for a in self.alerts if a["id"] in self.open]:
                     entry = self.open[alert["id"]]
-                    if entry.get("collecting"):
+                    self._sample_rechecks_locked(entry)
+                    if entry["collecting"]:
                         if now >= entry["deadline"] or self._after_ready_locked(entry):
                             self._send_first_check_locked(alert, entry)
                         continue
-                    if now < entry["deadline"]:
-                        continue
-                    if entry["waiting"] or self.verifier is None or self.verifier.status.startswith("exited"):
+                    if entry["waiting"]:
+                        if now < entry["deadline"]:
+                            continue
                         self._decide_locked(alert, "notified", "Verifier did not answer in time")
+                    elif len(entry["rechecks"]) > len(alert["checks"]):
+                        if self.verifier is None or self.verifier.status.startswith("exited"):
+                            self._decide_locked(alert, "notified", "Verifier did not answer in time")
+                        else:
+                            self._start_recheck_locked(alert, entry)
+                    elif entry["session"] != self.session or not self.received or now - self.received[-1] > FRESH_WINDOW_S:
+                        self._decide_locked(alert, "ended", "No new video to recheck")
                     else:
-                        self._start_recheck_locked(alert, entry)
+                        continue
                     self._save_alert(alert)
+
+    def _sample_rechecks_locked(self, entry: dict) -> None:
+        """Sample each recheck window as soon as its frames arrive, even while the verifier is still busy.
+
+        A slow verifier then checks the same frames as a fast one, only later, and frames it has not read yet
+        cannot drop out of the short frame buffer."""
+        while len(entry["rechecks"]) < self.config["rechecks"] and entry["session"] == self.session and self.frames:
+            end = self._recheck_end(entry, len(entry["rechecks"]) + 1)
+            if self.frames[-1][0] < end:
+                return
+            entry["rechecks"].append({"t": end, "wall": time.time(),
+                                      "frames": self._sample_locked(end - self.config["window_s"], end + 1e-3, NUM_FRAMES)})
 
     def _after_ready_locked(self, entry: dict) -> bool:
         """The frames after the alert window have arrived, or the source changed and they never will."""
@@ -471,21 +499,17 @@ class Monitor:
                  if entry["session"] == self.session else [])
         paths, alert["frames"] = self._save_frames(self.alerts_dir / alert["id"], [*entry["frames"], *after])
         alert["after_frames"] = len(after)
-        # Rechecks start from windows newer than the frames this check already saw.
-        self.open[alert["id"]] = {"deadline": time.monotonic() + VERIFIER_TIMEOUT_S, "waiting": True, "step": self.step}
+        entry |= {"collecting": False, "waiting": True, "frames": None, "deadline": time.monotonic() + VERIFIER_TIMEOUT_S}
         self.verifier.submit(alert["id"], paths)
         self._save_alert(alert)
 
     def _start_recheck_locked(self, alert: dict, entry: dict) -> None:
-        latest = self.latest
-        if latest is None or latest["step"] <= entry["step"] or time.time() - latest["wall"] > FRESH_WINDOW_S:
-            self._decide_locked(alert, "ended", "No new video to recheck")
-            return
         number = len(alert["checks"]) + 1
-        paths, urls = self._save_frames(self.alerts_dir / alert["id"] / f"r{number}", self.latest_frames)
-        alert["checks"].append({"number": number, "wall": latest["wall"], "step": latest["step"], "frames": urls,
-                                "events": latest["events"], "verifier": {"status": "pending"}, "passed": None})
-        entry |= {"deadline": time.monotonic() + VERIFIER_TIMEOUT_S, "waiting": True, "step": latest["step"]}
+        sample = entry["rechecks"][number - 1]
+        paths, urls = self._save_frames(self.alerts_dir / alert["id"] / f"r{number}", sample["frames"])
+        alert["checks"].append({"number": number, "wall": sample["wall"], "t": sample["t"], "frames": urls,
+                                "verifier": {"status": "pending"}, "passed": None})
+        entry |= {"deadline": time.monotonic() + VERIFIER_TIMEOUT_S, "waiting": True}
         alert["next_check_wall"] = None
         self.verifier.submit(f"{alert['id']}/r{number}", paths)
 
