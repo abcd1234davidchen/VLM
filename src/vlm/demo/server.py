@@ -25,7 +25,7 @@ alert as seen by the phone that opens it (named through the registration push se
 demo-only emergency button that places no call, and shows the person's details from ``demo_local.json``.
 That file holds personal settings and is ignored by git.
 
-    uv run --with mediapipe python -m vlm.demo.server
+    uv run python -m vlm.demo.server
 """
 
 from __future__ import annotations
