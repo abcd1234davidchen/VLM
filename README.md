@@ -78,8 +78,8 @@ The two detector checkpoints are in the [`models-v1` release](https://github.com
 ```bash
 uv sync
 gh release download models-v1 -p '*.tar'
-tar -xf patch16_crop_aware_seed42.tar     # zoom model
-tar -xf patch16_person_crop_seed42.tar    # person model
+tar -xf patch16_crop_aware.tar     # zoom model
+tar -xf patch16_person_crop.tar    # person model
 uv run hf download microsoft/xclip-base-patch16 --revision d6184e3fd8780d04c85d0f1eabe5f94bf44d98f6
 curl -L --create-dirs -o artifacts/hand_roi_models/pose_landmarker_lite.task \
   https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
