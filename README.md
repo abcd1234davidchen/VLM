@@ -73,18 +73,24 @@ Qwen3.5-4B is the demo default. For the two alerted events it dismissed 6 of 8 f
 
 ## Live alert demo
 
+Prerequisites:
+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Mac on Apple Silicon (16 GB of RAM recommended).
+
 The two detector checkpoints are in the [`models-v1` release](https://github.com/abcd1234davidchen/VLM/releases/tag/models-v1); they were trained on NTU RGB+D 120 and are for non-commercial research use only.
 
 ```bash
+git clone https://github.com/abcd1234davidchen/VLM.git
+cd VLM
 uv sync
-gh release download models-v1 -p '*.tar'
-tar -xf patch16_crop_aware.tar     # zoom model
-tar -xf patch16_person_crop.tar    # person model
+curl -L https://github.com/abcd1234davidchen/VLM/releases/download/models-v1/patch16_crop_aware.tar | tar -x     # zoom model
+curl -L https://github.com/abcd1234davidchen/VLM/releases/download/models-v1/patch16_person_crop.tar | tar -x    # person model
 uv run hf download microsoft/xclip-base-patch16 --revision d6184e3fd8780d04c85d0f1eabe5f94bf44d98f6
 curl -L --create-dirs -o artifacts/hand_roi_models/pose_landmarker_lite.task \
   https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
 
-# Verifier (Apple Silicon only): the model and its isolated mlx-vlm environment
+# Verifier: download the model and pre-build its offline environment
 uv run hf download mlx-community/Qwen3.5-4B-MLX-4bit
 uv run --no-project --python 3.13 --with mlx-vlm==0.7.8 --with opencv-python python -c "import mlx_vlm"
 ```
@@ -101,7 +107,7 @@ Open `http://127.0.0.1:8642` and pick a camera or a local video file. Settings o
 
 1. Install the ntfy app on each phone and subscribe to one hard-to-guess topic.
 2. Install `cloudflared` (`brew install cloudflared`).
-3. Copy [`src/vlm/demo/demo_local.example.json`](src/vlm/demo/demo_local.example.json) to `demo_local.json` and fill in the topic and the person's name, address, and notes.
+3. Copy [`src/vlm/demo/demo_local.example.json`](src/vlm/demo/demo_local.example.json) to `demo_local.json` in the repo root and fill in the topic and the person's name, address, and notes.
 
 When the server starts, each phone receives a push asking it to register a name. Every notified alert then sends a push with a link to an alert page that loops the frames the verifier saw. Opening the page marks the alert as seen by that phone, and a demo-only Call 911 button records who pressed it without placing a call; both show on the demo page. The link address changes on every restart, so phones register again after a restart.
 
